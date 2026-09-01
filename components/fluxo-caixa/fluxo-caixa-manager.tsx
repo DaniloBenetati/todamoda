@@ -12,7 +12,7 @@ import {
 } from "@/data/fluxo-caixa-data";
 import { formatCurrency, formatPercent } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { PeriodFilterDropdown } from "@/components/ui/period-filter";
+import { PeriodFilterDropdown, getCurrentQuarterMonthIds } from "@/components/ui/period-filter";
 import { Badge } from "@/components/ui/badge";
 import {
   Save,
@@ -235,8 +235,9 @@ export function FluxoCaixaManager() {
   const [savedSuccess, setSavedSuccess] = useState<string | null>(null);
 
   const [visibleMonths, setVisibleMonths] = useState<Record<string, boolean>>(() => {
+    const quarter = new Set(getCurrentQuarterMonthIds());
     const m: Record<string, boolean> = { total: true };
-    CASH_FLOW_MONTHS.forEach((mo) => (m[mo.id] = true));
+    CASH_FLOW_MONTHS.forEach((mo) => (m[mo.id] = quarter.has(mo.id)));
     return m;
   });
 

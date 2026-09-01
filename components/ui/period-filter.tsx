@@ -3,6 +3,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
+// Ids ("01".."12") do trimestre corrente, usado como período visível padrão nas grades —
+// mostrar os 12 meses de uma vez é o que deixa essas tabelas (300+ contas x vários canais)
+// pesadas para exibir; "Todos os períodos" continua a um clique de distância no dropdown.
+export function getCurrentQuarterMonthIds(): string[] {
+  const month = new Date().getMonth(); // 0-11
+  const quarterStart = Math.floor(month / 3) * 3;
+  return [quarterStart + 1, quarterStart + 2, quarterStart + 3].map((n) => String(n).padStart(2, "0"));
+}
+
 export interface PeriodFilterMonth {
   id: string; // "01".."12"
   label: string; // "Janeiro 2026"

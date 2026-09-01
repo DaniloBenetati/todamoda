@@ -23,7 +23,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import * as XLSX from "xlsx";
 import { MONTHS_FULL } from "@/components/dre-gerencial/dre-gerencial-manager";
-import { PeriodFilterDropdown } from "@/components/ui/period-filter";
+import { PeriodFilterDropdown, getCurrentQuarterMonthIds } from "@/components/ui/period-filter";
 
 const STORAGE_KEY_BUDGET = "toda_moda_budget_data_v2";
 const STORAGE_KEY_DRE = "toda_moda_dre_gerencial_v7";
@@ -38,20 +38,11 @@ export function BudgetManager() {
   const [savedSuccess, setSavedSuccess] = useState<string | null>(null);
 
   // Active visible months
-  const [visibleMonths, setVisibleMonths] = useState<Record<string, boolean>>({
-    "01": true,
-    "02": true,
-    "03": true,
-    "04": true,
-    "05": true,
-    "06": true,
-    "07": true,
-    "08": true,
-    "09": true,
-    "10": true,
-    "11": true,
-    "12": true,
-    "total": true,
+  const [visibleMonths, setVisibleMonths] = useState<Record<string, boolean>>(() => {
+    const quarter = new Set(getCurrentQuarterMonthIds());
+    const m: Record<string, boolean> = { total: true };
+    MONTHS_FULL.forEach((mo) => (m[mo.id] = quarter.has(mo.id)));
+    return m;
   });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -265,7 +256,7 @@ export function BudgetManager() {
     csv += ",Total_Anual_Orcado\n";
 
     filteredAccounts.forEach(a => {
-      const val = a.values[selectedChannel]?.planned || 0;
+      const val = a.values?.[selectedChannel]?.planned || 0;
       csv += `${a.level},"${a.code}","${a.name}","${a.category}"`;
       activeMonthsList.forEach(() => {
         csv += `,${(val / 12).toFixed(2)}`;
@@ -402,7 +393,7 @@ export function BudgetManager() {
                     const isCollapsed = collapsedIds.has(item.id);
 
                     const indentPx = isResult ? 0 : Math.max(0, (item.level - 1) * 16);
-                    const val = item.values[selectedChannel]?.planned || 0;
+                    const val = item.values?.[selectedChannel]?.planned || 0;
                     const monthVal = val / 12;
 
                     let rowBg = "hover:bg-zinc-50/80 dark:hover:bg-zinc-900/60 transition-colors";

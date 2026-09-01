@@ -23,7 +23,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import * as XLSX from "xlsx";
 import { ImportReviewModal, ImportChannel, ImportProjSummaryEntry } from "./import-review-modal";
-import { PeriodFilterDropdown } from "@/components/ui/period-filter";
+import { PeriodFilterDropdown, getCurrentQuarterMonthIds } from "@/components/ui/period-filter";
 
 const STORAGE_KEY_DRE = "toda_moda_dre_gerencial_v7";
 const STORAGE_KEY_BUDGET = "toda_moda_budget_data_v2";
@@ -76,20 +76,11 @@ export function DREGerencialManager() {
   const [savedSuccess, setSavedSuccess] = useState<string | null>(null);
 
   // Visible Months Filter
-  const [visibleMonths, setVisibleMonths] = useState<Record<string, boolean>>({
-    "01": true,
-    "02": true,
-    "03": true,
-    "04": true,
-    "05": true,
-    "06": true,
-    "07": true,
-    "08": true,
-    "09": true,
-    "10": true,
-    "11": true,
-    "12": true,
-    "total": true,
+  const [visibleMonths, setVisibleMonths] = useState<Record<string, boolean>>(() => {
+    const quarter = new Set(getCurrentQuarterMonthIds());
+    const m: Record<string, boolean> = { total: true };
+    MONTHS_FULL.forEach((mo) => (m[mo.id] = quarter.has(mo.id)));
+    return m;
   });
 
   // Visible Channels / Projects under each month
@@ -290,14 +281,14 @@ export function DREGerencialManager() {
     const ebitdaAccount = dreAccounts.find(a => a.code === "49.1");
     const netResultAccount = dreAccounts.find(a => a.code === "54.1");
 
-    const plannedRevenue = revenueAccount ? (revenueAccount.values.consolidado?.planned || 0) : 0;
-    const realizedRevenue = revenueAccount ? (revenueAccount.values.consolidado?.realized || 0) : 0;
+    const plannedRevenue = revenueAccount ? (revenueAccount.values?.consolidado?.planned || 0) : 0;
+    const realizedRevenue = revenueAccount ? (revenueAccount.values?.consolidado?.realized || 0) : 0;
 
-    const plannedNet = netRevenueAccount ? (netRevenueAccount.values.consolidado?.planned || 0) : 0;
-    const realizedNet = netRevenueAccount ? (netRevenueAccount.values.consolidado?.realized || 0) : 0;
+    const plannedNet = netRevenueAccount ? (netRevenueAccount.values?.consolidado?.planned || 0) : 0;
+    const realizedNet = netRevenueAccount ? (netRevenueAccount.values?.consolidado?.realized || 0) : 0;
 
-    const realizedEbitda = ebitdaAccount ? (ebitdaAccount.values.consolidado?.realized || 0) : 0;
-    const realizedNetResult = netResultAccount ? (netResultAccount.values.consolidado?.realized || 0) : 0;
+    const realizedEbitda = ebitdaAccount ? (ebitdaAccount.values?.consolidado?.realized || 0) : 0;
+    const realizedNetResult = netResultAccount ? (netResultAccount.values?.consolidado?.realized || 0) : 0;
 
     const marginNet = realizedRevenue > 0 ? (realizedNet / realizedRevenue) * 100 : 0;
     const marginEbitda = realizedNet > 0 ? (realizedEbitda / realizedNet) * 100 : 0;
@@ -409,10 +400,10 @@ export function DREGerencialManager() {
       });
 
       if (addTiendas > 0 || addProduto > 0 || addFranquias > 0) {
-        const currentTiendas = account.values.tiendas || { planned: 0, realized: 0 };
-        const currentProduto = account.values.produto || { planned: 0, realized: 0 };
-        const currentFranquias = account.values.franquias || { planned: 0, realized: 0 };
-        const currentConsolidado = account.values.consolidado || { planned: 0, realized: 0 };
+        const currentTiendas = account.values?.tiendas || { planned: 0, realized: 0 };
+        const currentProduto = account.values?.produto || { planned: 0, realized: 0 };
+        const currentFranquias = account.values?.franquias || { planned: 0, realized: 0 };
+        const currentConsolidado = account.values?.consolidado || { planned: 0, realized: 0 };
 
         const newTiendas = { planned: currentTiendas.planned, realized: addTiendas };
         const newProduto = { planned: currentProduto.planned, realized: addProduto };
@@ -527,10 +518,10 @@ export function DREGerencialManager() {
     csv += ",Total_Consolidado_Real\n";
 
     filteredAccounts.forEach(a => {
-      const c = a.values.consolidado || { planned: 0, realized: 0 };
-      const t = a.values.tiendas || { planned: 0, realized: 0 };
-      const p = a.values.produto || { planned: 0, realized: 0 };
-      const f = a.values.franquias || { planned: 0, realized: 0 };
+      const c = a.values?.consolidado || { planned: 0, realized: 0 };
+      const t = a.values?.tiendas || { planned: 0, realized: 0 };
+      const p = a.values?.produto || { planned: 0, realized: 0 };
+      const f = a.values?.franquias || { planned: 0, realized: 0 };
 
       csv += `${a.level},"${a.code}","${a.name}","${a.category}"`;
       activeMonthsList.forEach(() => {
@@ -800,10 +791,10 @@ export function DREGerencialManager() {
 
                     const indentPx = isResult ? 0 : Math.max(0, (item.level - 1) * 16);
 
-                    const t = item.values.tiendas || { planned: 0, realized: 0 };
-                    const p = item.values.produto || { planned: 0, realized: 0 };
-                    const f = item.values.franquias || { planned: 0, realized: 0 };
-                    const c = item.values.consolidado || { planned: 0, realized: 0 };
+                    const t = item.values?.tiendas || { planned: 0, realized: 0 };
+                    const p = item.values?.produto || { planned: 0, realized: 0 };
+                    const f = item.values?.franquias || { planned: 0, realized: 0 };
+                    const c = item.values?.consolidado || { planned: 0, realized: 0 };
 
                     // Monthly proportional distribution
                     const t_m_plan = t.planned / 12;
