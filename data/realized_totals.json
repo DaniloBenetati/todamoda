@@ -1,0 +1,644 @@
+{
+  "41.1.1": {
+    "tiendas": 878644.35,
+    "produto": 1498957.8899999992,
+    "franquias": 59007.29999999999,
+    "consolidado": 2436609.54
+  },
+  "10.1.19": {
+    "tiendas": 60.08,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 60.08
+  },
+  "11.1.2": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 2242.66,
+    "consolidado": 2242.66
+  },
+  "5.1.5": {
+    "tiendas": 31400.8,
+    "produto": 22260,
+    "franquias": 37580.920000000006,
+    "consolidado": 91241.72000000002
+  },
+  "10.1.28": {
+    "tiendas": 1255.41,
+    "produto": 139324.33999999997,
+    "franquias": 19348.509997,
+    "consolidado": 159928.25999700002
+  },
+  "2.1.7": {
+    "tiendas": 151609.89933699998,
+    "produto": 23239.72,
+    "franquias": 0,
+    "consolidado": 174849.61933699995
+  },
+  "7.1.9": {
+    "tiendas": 13231.299999999997,
+    "produto": 42460.5,
+    "franquias": 33550.6,
+    "consolidado": 89242.40000000001
+  },
+  "27.1.19": {
+    "tiendas": 374.93,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 374.93
+  },
+  "1.1.7": {
+    "tiendas": 0,
+    "produto": 239917.16999999998,
+    "franquias": 0,
+    "consolidado": 239917.16999999998
+  },
+  "23.1.4": {
+    "tiendas": 304564.79000000004,
+    "produto": 157444.06,
+    "franquias": 34275.7,
+    "consolidado": 496284.55
+  },
+  "20.1.18": {
+    "tiendas": 0,
+    "produto": 6843.890000000001,
+    "franquias": 156.6,
+    "consolidado": 7000.490000000002
+  },
+  "2.1.3": {
+    "tiendas": 73050.469735,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 73050.469735
+  },
+  "2.1.1": {
+    "tiendas": 715008.6706610002,
+    "produto": 88275.08,
+    "franquias": 0,
+    "consolidado": 803283.7506610003
+  },
+  "27.1.5": {
+    "tiendas": 0,
+    "produto": 4419.25,
+    "franquias": 0,
+    "consolidado": 4419.25
+  },
+  "10.1.2": {
+    "tiendas": 0,
+    "produto": 57411.459999999985,
+    "franquias": 0,
+    "consolidado": 57411.459999999985
+  },
+  "26.1.9": {
+    "tiendas": 650,
+    "produto": 80927.23000000003,
+    "franquias": 1419.04,
+    "consolidado": 82996.27000000002
+  },
+  "24.1.3": {
+    "tiendas": 0,
+    "produto": 86000,
+    "franquias": 249254.22,
+    "consolidado": 335254.22
+  },
+  "43.1.1": {
+    "tiendas": 31385.52,
+    "produto": 2353380.0199999996,
+    "franquias": 0,
+    "consolidado": 2384765.5399999996
+  },
+  "4.1.6": {
+    "tiendas": 13529.911418,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 13529.911418
+  },
+  "3.1.8": {
+    "tiendas": 0,
+    "produto": 98574.20000000004,
+    "franquias": 0,
+    "consolidado": 98574.20000000004
+  },
+  "10.1.15": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 46388.16,
+    "consolidado": 46388.16
+  },
+  "13.1.1": {
+    "tiendas": 14.72,
+    "produto": 0,
+    "franquias": 31700,
+    "consolidado": 31714.72
+  },
+  "24.1.2": {
+    "tiendas": 0,
+    "produto": 40733.270000000004,
+    "franquias": 42232.5,
+    "consolidado": 82965.77
+  },
+  "11.1.3": {
+    "tiendas": 0,
+    "produto": 9513.010035,
+    "franquias": 4543.179993,
+    "consolidado": 14056.190027999999
+  },
+  "43.1.3.3": {
+    "tiendas": 0,
+    "produto": 455630.878004,
+    "franquias": 0,
+    "consolidado": 455630.878004
+  },
+  "43.1.3.2.2": {
+    "tiendas": 0,
+    "produto": 376537.49245300004,
+    "franquias": 0,
+    "consolidado": 376537.49245300004
+  },
+  "3.1.2": {
+    "tiendas": 687.9100000000001,
+    "produto": 455031.54,
+    "franquias": 0,
+    "consolidado": 455719.44999999995
+  },
+  "43.1.3.5": {
+    "tiendas": 0,
+    "produto": 605836.159023,
+    "franquias": 0,
+    "consolidado": 605836.159023
+  },
+  "43.1.3.2.6": {
+    "tiendas": 0,
+    "produto": 19155.366841999996,
+    "franquias": 0,
+    "consolidado": 19155.366841999996
+  },
+  "43.1.3.2.1": {
+    "tiendas": 0,
+    "produto": 816649.3410870001,
+    "franquias": 0,
+    "consolidado": 816649.3410870001
+  },
+  "43.1.3.2.5": {
+    "tiendas": 0,
+    "produto": 14563.650932999997,
+    "franquias": 0,
+    "consolidado": 14563.650932999997
+  },
+  "43.1.3.2.4": {
+    "tiendas": 0,
+    "produto": 395998.687464,
+    "franquias": 0,
+    "consolidado": 395998.687464
+  },
+  "43.1.3.2.3": {
+    "tiendas": 0,
+    "produto": 90746.756989,
+    "franquias": 0,
+    "consolidado": 90746.756989
+  },
+  "43.1.3.1": {
+    "tiendas": 0,
+    "produto": 4123431.797208,
+    "franquias": 0,
+    "consolidado": 4123431.797208
+  },
+  "2.1.4": {
+    "tiendas": 18008.200043,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 18008.200043
+  },
+  "6.1.4": {
+    "tiendas": 23289.598806000005,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 23289.598806000005
+  },
+  "24.1.1": {
+    "tiendas": 0,
+    "produto": 171160,
+    "franquias": 0,
+    "consolidado": 171160
+  },
+  "10.1.42": {
+    "tiendas": 52699.49,
+    "produto": 0,
+    "franquias": 4352.63,
+    "consolidado": 57052.119999999995
+  },
+  "27.1.41": {
+    "tiendas": 0,
+    "produto": 4640.1,
+    "franquias": 0,
+    "consolidado": 4640.1
+  },
+  "6.1.7": {
+    "tiendas": 3055.0800000000004,
+    "produto": 1154.41,
+    "franquias": 0,
+    "consolidado": 4209.490000000001
+  },
+  "20.1.5": {
+    "tiendas": 113387.201963,
+    "produto": 10369.159999999998,
+    "franquias": 0,
+    "consolidado": 123756.36196300002
+  },
+  "9.1.1": {
+    "tiendas": 113640,
+    "produto": 10050,
+    "franquias": 0,
+    "consolidado": 123690
+  },
+  "25.1.7": {
+    "tiendas": 0,
+    "produto": 4614,
+    "franquias": 0,
+    "consolidado": 4614
+  },
+  "27.1.28": {
+    "tiendas": 44008.799999999996,
+    "produto": 110937.465872,
+    "franquias": 157.829727,
+    "consolidado": 155104.095599
+  },
+  "25.1.3": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 12284,
+    "consolidado": 12284
+  },
+  "20.1.1": {
+    "tiendas": 3176.42,
+    "produto": 1190859.78,
+    "franquias": 479029.77,
+    "consolidado": 1673065.9700000002
+  },
+  "20.1.13": {
+    "tiendas": 6013.18,
+    "produto": 5003.320000000001,
+    "franquias": 7212.94,
+    "consolidado": 18229.440000000002
+  },
+  "13.1.3": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 522595.80000000005,
+    "consolidado": 522595.80000000005
+  },
+  "20.1.9": {
+    "tiendas": 91034.81999999999,
+    "produto": 350030.87000000017,
+    "franquias": 255591.22999999998,
+    "consolidado": 696656.9199999999
+  },
+  "3.1.7": {
+    "tiendas": 569.9399999999999,
+    "produto": 340725.62,
+    "franquias": 4593,
+    "consolidado": 345888.56
+  },
+  "1.1.1": {
+    "tiendas": 179319.17,
+    "produto": 140841.92,
+    "franquias": 117869.65,
+    "consolidado": 438030.74000000005
+  },
+  "1.1.6": {
+    "tiendas": 609.6,
+    "produto": 0,
+    "franquias": 18149.125311,
+    "consolidado": 18758.725311000002
+  },
+  "28.1.5": {
+    "tiendas": 0,
+    "produto": 8393.554049,
+    "franquias": 482.790007,
+    "consolidado": 8876.344056
+  },
+  "7.1.6": {
+    "tiendas": 0,
+    "produto": 5504.05,
+    "franquias": 0,
+    "consolidado": 5504.05
+  },
+  "3.1.10": {
+    "tiendas": 0,
+    "produto": 9890.189999999999,
+    "franquias": 0,
+    "consolidado": 9890.189999999999
+  },
+  "28.1.2": {
+    "tiendas": 0,
+    "produto": 16492.647109,
+    "franquias": 0,
+    "consolidado": 16492.647109
+  },
+  "3.1.1": {
+    "tiendas": 0,
+    "produto": 245501.52000000002,
+    "franquias": 0,
+    "consolidado": 245501.52000000002
+  },
+  "21.1.1": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 1171.54,
+    "consolidado": 1171.54
+  },
+  "4.1.2": {
+    "tiendas": 16412.54,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 16412.54
+  },
+  "21.1.2": {
+    "tiendas": 0,
+    "produto": 35009.39999999999,
+    "franquias": 0,
+    "consolidado": 35009.39999999999
+  },
+  "3.1.13": {
+    "tiendas": 0,
+    "produto": 8400.289999999999,
+    "franquias": 0,
+    "consolidado": 8400.289999999999
+  },
+  "1.1.5": {
+    "tiendas": 19709.749998999996,
+    "produto": 0,
+    "franquias": 2943.2046889999997,
+    "consolidado": 22652.954687999998
+  },
+  "31.1.7": {
+    "tiendas": 0,
+    "produto": 11607.310000000001,
+    "franquias": 0,
+    "consolidado": 11607.310000000001
+  },
+  "28.1.3": {
+    "tiendas": 570.25,
+    "produto": 437.33000000000004,
+    "franquias": 3631.100271,
+    "consolidado": 4638.680271
+  },
+  "1.1.9": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 103942.56,
+    "consolidado": 103942.56
+  },
+  "1.1.11": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 748.16,
+    "consolidado": 748.16
+  },
+  "1.1.8": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 49396.35,
+    "consolidado": 49396.35
+  },
+  "20.1.8": {
+    "tiendas": 0,
+    "produto": 53921.350000000006,
+    "franquias": 0,
+    "consolidado": 53921.350000000006
+  },
+  "20.1.11": {
+    "tiendas": 0,
+    "produto": 2844.85,
+    "franquias": 0,
+    "consolidado": 2844.85
+  },
+  "6.1.8": {
+    "tiendas": 3578.59,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 3578.59
+  },
+  "1.1.13": {
+    "tiendas": 5958.6,
+    "produto": 0,
+    "franquias": 4595.65,
+    "consolidado": 10554.25
+  },
+  "3.1.4": {
+    "tiendas": 0,
+    "produto": 6480,
+    "franquias": 0,
+    "consolidado": 6480
+  },
+  "7.1.8": {
+    "tiendas": 5130,
+    "produto": 2500,
+    "franquias": 0,
+    "consolidado": 7630
+  },
+  "6.1.3": {
+    "tiendas": 2268.3,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 2268.3
+  },
+  "26.1.8": {
+    "tiendas": 370,
+    "produto": 1999.17,
+    "franquias": 0,
+    "consolidado": 2369.17
+  },
+  "10.1.33": {
+    "tiendas": 46740.37999999998,
+    "produto": 2897.96,
+    "franquias": 0,
+    "consolidado": 49638.33999999998
+  },
+  "20.1.6": {
+    "tiendas": 42517.588036999994,
+    "produto": 2471.98,
+    "franquias": 0,
+    "consolidado": 44989.56803699999
+  },
+  "6.1.9": {
+    "tiendas": 2985.45,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 2985.45
+  },
+  "30.1.3": {
+    "tiendas": 0,
+    "produto": 698293.15,
+    "franquias": 0,
+    "consolidado": 698293.15
+  },
+  "5.1.2": {
+    "tiendas": 3079.0800000000004,
+    "produto": 500,
+    "franquias": 1625,
+    "consolidado": 5204.08
+  },
+  "22.1.1": {
+    "tiendas": 173653.89,
+    "produto": 0,
+    "franquias": 15224.89,
+    "consolidado": 188878.78000000003
+  },
+  "4.1.5": {
+    "tiendas": 0,
+    "produto": 6515.42,
+    "franquias": 42431.45,
+    "consolidado": 48946.869999999995
+  },
+  "31.1.4": {
+    "tiendas": 0,
+    "produto": 57550.06,
+    "franquias": 0,
+    "consolidado": 57550.06
+  },
+  "27.1.29": {
+    "tiendas": 0,
+    "produto": 49.9,
+    "franquias": 0,
+    "consolidado": 49.9
+  },
+  "4.1.3": {
+    "tiendas": 0,
+    "produto": 15570.43,
+    "franquias": 0,
+    "consolidado": 15570.43
+  },
+  "27.1.36": {
+    "tiendas": 0,
+    "produto": 3201.5099999999998,
+    "franquias": 0,
+    "consolidado": 3201.5099999999998
+  },
+  "22.1.2": {
+    "tiendas": 0,
+    "produto": 3771.53,
+    "franquias": 0,
+    "consolidado": 3771.53
+  },
+  "31.1.1": {
+    "tiendas": 0,
+    "produto": 10361.1,
+    "franquias": 0,
+    "consolidado": 10361.1
+  },
+  "5.1.4": {
+    "tiendas": 13353.51,
+    "produto": 75300,
+    "franquias": 246824.89000000004,
+    "consolidado": 335478.4
+  },
+  "11.1.5": {
+    "tiendas": 0,
+    "produto": 2576.592734,
+    "franquias": 3195.7100040000005,
+    "consolidado": 5772.302738
+  },
+  "10.1.4": {
+    "tiendas": 0,
+    "produto": 6263.28,
+    "franquias": 0,
+    "consolidado": 6263.28
+  },
+  "22.1.9": {
+    "tiendas": 0,
+    "produto": 168,
+    "franquias": 1167.96,
+    "consolidado": 1335.96
+  },
+  "23.1.1": {
+    "tiendas": 0,
+    "produto": 9430.48,
+    "franquias": 0,
+    "consolidado": 9430.48
+  },
+  "13.1.2": {
+    "tiendas": 0,
+    "produto": 1750,
+    "franquias": 0,
+    "consolidado": 1750
+  },
+  "27.1.4": {
+    "tiendas": 3320,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 3320
+  },
+  "27.1.15": {
+    "tiendas": 444.25,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 444.25
+  },
+  "26.1.2": {
+    "tiendas": 0,
+    "produto": 6700,
+    "franquias": 0,
+    "consolidado": 6700
+  },
+  "5.1.6": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 188701.81,
+    "consolidado": 188701.81
+  },
+  "27.1.13": {
+    "tiendas": 0,
+    "produto": 39879,
+    "franquias": 0,
+    "consolidado": 39879
+  },
+  "27.1.24": {
+    "tiendas": 3600,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 3600
+  },
+  "23.1.5": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 1478,
+    "consolidado": 1478
+  },
+  "27.1.6": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 210.38,
+    "consolidado": 210.38
+  },
+  "1.1.18": {
+    "tiendas": 0,
+    "produto": 0,
+    "franquias": 1612.45,
+    "consolidado": 1612.45
+  },
+  "28.1.4": {
+    "tiendas": 0,
+    "produto": 22706.990203,
+    "franquias": 0,
+    "consolidado": 22706.990203
+  },
+  "27.1.22": {
+    "tiendas": 0,
+    "produto": 6047.24,
+    "franquias": 0,
+    "consolidado": 6047.24
+  },
+  "41.1.2": {
+    "tiendas": 50403.420000000006,
+    "produto": 29347.78,
+    "franquias": 0,
+    "consolidado": 79751.20000000001
+  },
+  "40.1.2": {
+    "tiendas": 19.9,
+    "produto": 0,
+    "franquias": 0,
+    "consolidado": 19.9
+  }
+}
