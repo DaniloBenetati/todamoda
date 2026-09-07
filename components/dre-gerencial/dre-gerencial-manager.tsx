@@ -6,24 +6,28 @@ import { formatCurrency } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { 
-  Plus, 
-  Search, 
-  RotateCcw, 
-  Download, 
-  CheckCircle2, 
-  X, 
+import {
+  Plus,
+  Search,
+  RotateCcw,
+  Download,
+  CheckCircle2,
+  X,
   SlidersHorizontal,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
-  UploadCloud
+  UploadCloud,
+  AlertTriangle,
+  Info
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import * as XLSX from "xlsx";
 import { ImportReviewModal, ImportChannel, ImportProjSummaryEntry } from "./import-review-modal";
 import { PeriodFilterDropdown } from "@/components/ui/period-filter";
+import { useToast } from "@/components/ui/toast-provider";
+import { useConfirm } from "@/components/ui/confirm-provider";
 
 const STORAGE_KEY_DRE = "toda_moda_dre_gerencial_v7";
 const STORAGE_KEY_BUDGET = "toda_moda_budget_data_v2";
@@ -208,7 +212,11 @@ export function DREGerencialManager() {
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
-  const [savedSuccess, setSavedSuccess] = useState<string | null>(null);
+
+  // Avisos e confirmações do sistema inteiro passam por aqui — ver components/ui/toast-provider
+  // e components/ui/confirm-provider (substituem alert()/confirm() nativos do navegador).
+  const toast = useToast();
+  const confirmAction = useConfirm();
 
   // Visible Months Filter
   // Começa mostrando os 12 meses (em vez de só o trimestre atual) — enquanto os imports ainda
@@ -327,15 +335,19 @@ export function DREGerencialManager() {
     setDreAccounts(withIndicators);
     try {
       localStorage.setItem(STORAGE_KEY_DRE, JSON.stringify(withIndicators));
-      setSavedSuccess(message);
-      setTimeout(() => setSavedSuccess(null), 4000);
+      toast.success(message);
     } catch (e) {
       console.error("Erro ao salvar DRE:", e);
     }
   };
 
-  const handleReset = () => {
-    if (confirm("Deseja restaurar e zerar todos os lançamentos da DRE?")) {
+  const handleReset = async () => {
+    const ok = await confirmAction("Isso apaga todos os lançamentos importados e o mapeamento de Projeto salvo. Não pode ser desfeito.", {
+      title: "Restaurar e zerar a DRE?",
+      confirmLabel: "Zerar DRE",
+      tone: "danger",
+    });
+    if (ok) {
       localStorage.removeItem("toda_moda_dre_has_imported_v1");
       // Também esquece o mapeamento Projeto -> Canal já confirmado, senão a próxima importação
       // reconhece os mesmos projetos como "já conhecidos" e pula a tela de revisão.
@@ -504,12 +516,14 @@ export function DREGerencialManager() {
 
   // Aplica o mapeamento projeto -> canal já confirmado (persistido ou recém-revisado) sobre os
   // dados já lidos do arquivo, faz o rollup por código de conta (igual ao fluxo anterior) e salva.
-  const finalizeImport = (
+  const finalizeImport = async (
     data: any[][],
     mapping: Record<string, ImportChannel>,
     fileName: string,
     summary: ImportProjSummaryEntry[]
   ) => {
+    toast.clear();
+
     // Descobre a coluna de data pelo cabeçalho (linha 1 do arquivo) para poder separar o
     // Realizado por mês. Se não achar nenhuma coluna de data reconhecível, cai no mês atual
     // (e avisa no final) em vez de travar a importação.
@@ -579,8 +593,9 @@ export function DREGerencialManager() {
     );
     if (monthsToOverwrite.length > 0) {
       const names = monthsToOverwrite.sort().map(monthLabel).join(", ");
-      const proceed = confirm(
-        `Os meses ${names} já têm Realizado importado anteriormente. Reimportar vai SUBSTITUIR os valores desses meses (os demais meses não são afetados). Deseja continuar?`
+      const proceed = await confirmAction(
+        `Os meses ${names} já têm Realizado importado anteriormente. Reimportar vai SUBSTITUIR os valores desses meses (os demais meses não são afetados).`,
+        { title: "Sobrescrever meses já importados?", confirmLabel: "Sobrescrever", tone: "danger" }
       );
       if (!proceed) {
         setPendingImport(null);
@@ -718,14 +733,16 @@ export function DREGerencialManager() {
       if (noCodeTotal > 0) {
         parts.push(`${formatCurrency(noCodeTotal)} (${noCodeCount} lançamento(s)) sem nenhum código reconhecível na coluna de conta`);
       }
-      alert(
-        `Aviso: parte do arquivo não entrou na DRE, mesmo contando no Valor Total da revisão — ${parts.join("; ")}.`
+      toast.warning(
+        "Parte do arquivo não entrou na DRE",
+        `Esse valor conta no Valor Total da tela de revisão, mas não cai em nenhuma linha da DRE — ${parts.join("; ")}.`
       );
     }
 
     if (missingDateCount > 0) {
-      alert(
-        `Aviso: ${missingDateCount} lançamento(s) não tinham uma data reconhecível e foram colocados em ${monthLabel(currentMonthFallback)} (mês atual). Confira a coluna de data do arquivo se isso não for esperado.`
+      toast.warning(
+        "Lançamento sem data reconhecível",
+        `${missingDateCount} lançamento(s) não tinham uma data reconhecível e foram colocados em ${monthLabel(currentMonthFallback)} (mês atual). Confira a coluna de data do arquivo se isso não for esperado.`
       );
     }
 
@@ -734,8 +751,9 @@ export function DREGerencialManager() {
     // conta, em valor absoluto (deveria bater com o Valor Total, já que unmatched/noCode deram 0).
     if (revenueTaggedTotal > 0) {
       const accSample = Array.from(revenueTaggedAccounts).slice(0, 6).join(", ");
-      alert(
-        `Diagnóstico de sinal: ${formatCurrency(grandMatchedTotal)} do arquivo caiu em alguma conta da DRE (bate com o Valor Total da revisão). Desses, ${formatCurrency(revenueTaggedTotal)} (${revenueTaggedCount} lançamento(s)) caíram em conta de RECEITA — ficam positivos, então "cancelam" parte do total negativo. Contas de receita atingidas: ${accSample}. Se isso não fizer sentido para um arquivo de Contas a Pagar, provavelmente é lançamento com código de conta errado no Omie.`
+      toast.warning(
+        "Lançamento em conta de Receita",
+        `${formatCurrency(grandMatchedTotal)} do arquivo caiu em alguma conta da DRE (bate com o Valor Total da revisão). Desses, ${formatCurrency(revenueTaggedTotal)} (${revenueTaggedCount} lançamento(s)) caíram em conta de RECEITA — ficam positivos, então "cancelam" parte do total negativo. Contas atingidas: ${accSample}. Se isso não fizer sentido para um arquivo de Contas a Pagar/Pagas, provavelmente é lançamento com código de conta errado no Omie.`
       );
     } else {
       console.log(`[DRE import] Total casado: ${formatCurrency(grandMatchedTotal)}. Nenhum lançamento caiu em conta de Receita.`);
@@ -756,7 +774,8 @@ export function DREGerencialManager() {
         const data: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
 
         if (data.length < 3) {
-          alert("Arquivo Excel não possui registros suficientes.");
+          toast.clear();
+          toast.warning("Arquivo sem registros suficientes", "Esse arquivo Excel não tem linhas de dados para importar.");
           return;
         }
 
@@ -803,7 +822,8 @@ export function DREGerencialManager() {
         }
       } catch (err) {
         console.error("Erro ao importar arquivo Excel:", err);
-        alert("Ocorreu um erro ao processar o arquivo Excel.");
+        toast.clear();
+        toast.warning("Erro ao processar o arquivo", "Não consegui ler esse arquivo Excel. Confira se o formato é .xlsx/.xls/.csv e tente de novo.");
       } finally {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
@@ -923,14 +943,6 @@ export function DREGerencialManager() {
             </div>
           </div>
         </div>
-
-        {/* Success Alert */}
-        {savedSuccess && (
-          <div className="flex items-center gap-2 p-3 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs font-semibold animate-in fade-in slide-in-from-top-2">
-            <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-            <span>{savedSuccess}</span>
-          </div>
-        )}
 
         {/* Complete 3-Tier Multi-Month & Multi-Project Table */}
         <div className="border border-zinc-200 dark:border-zinc-800 bg-card overflow-hidden">

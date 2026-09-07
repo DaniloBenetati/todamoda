@@ -8,6 +8,8 @@ import { PlanoContasManager } from "@/components/plano-contas/plano-contas-manag
 import { FluxoCaixaManager } from "@/components/fluxo-caixa/fluxo-caixa-manager";
 import { DRE_TRANSACTIONS_DATA } from "@/data/mock-dre-data";
 import { Badge } from "@/components/ui/badge";
+import { ToastProvider } from "@/components/ui/toast-provider";
+import { ConfirmProvider } from "@/components/ui/confirm-provider";
 import {
   ReceiptText,
   Calendar,
@@ -70,6 +72,8 @@ export default function Home() {
   };
 
   return (
+    <ToastProvider>
+    <ConfirmProvider>
     <div className="flex h-screen w-full bg-background overflow-hidden">
       {/* Sidebar with theme toggle in bottom */}
       <AppSidebar
@@ -243,5 +247,7 @@ export default function Home() {
         </div>
       </main>
     </div>
+    </ConfirmProvider>
+    </ToastProvider>
   );
 }

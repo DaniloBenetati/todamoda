@@ -28,6 +28,8 @@ import {
   Building2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useToast } from "@/components/ui/toast-provider";
+import { useConfirm } from "@/components/ui/confirm-provider";
 import * as XLSX from "xlsx";
 
 const STORAGE_KEY_FLUXO = "toda_moda_fluxo_caixa_v1";
@@ -227,6 +229,8 @@ function DiffPctCell({ planned, realized }: { planned: number; realized: number 
 type EntityView = "both" | CashFlowEntity;
 
 export function FluxoCaixaManager() {
+  const toast = useToast();
+  const confirmAction = useConfirm();
   const [items, setItems] = useState<CashFlowLineItem[]>([]);
   const [entityView, setEntityView] = useState<EntityView>("both");
   const [searchTerm, setSearchTerm] = useState("");
@@ -292,8 +296,13 @@ export function FluxoCaixaManager() {
 
   const handleManualSave = () => saveItems(items);
 
-  const handleReset = () => {
-    if (confirm("Deseja redefinir o Fluxo de Caixa para os valores originais da planilha?")) {
+  const handleReset = async () => {
+    const ok = await confirmAction("Os valores voltam ao original da planilha. Não pode ser desfeito.", {
+      title: "Redefinir o Fluxo de Caixa?",
+      confirmLabel: "Redefinir",
+      tone: "danger",
+    });
+    if (ok) {
       saveItems(SEED_ITEMS, "Fluxo de Caixa redefinido com sucesso!");
     }
   };
@@ -404,7 +413,7 @@ export function FluxoCaixaManager() {
         const ws = wb.Sheets[wb.SheetNames[0]];
         const data: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
         if (!data || data.length < 3) {
-          alert("Arquivo Excel não possui registros suficientes.");
+          toast.warning("Arquivo sem registros suficientes", "Esse arquivo Excel não tem linhas de dados para importar.");
           return;
         }
 
@@ -480,7 +489,10 @@ export function FluxoCaixaManager() {
         // Como NewCo e BSG têm linhas com o mesmo nome (ex.: "Impuestos", "Otros"), essa reimportação
         // exige uma entidade específica selecionada, para não aplicar a mesma linha às duas.
         if (entityView === "both") {
-          alert('Para reimportar a planilha "CashFlow - 2026.xlsx" original, selecione NewCo ou BSG (não "Ambos") antes de importar.');
+          toast.warning(
+            "Selecione uma entidade antes de importar",
+            'Para reimportar a planilha "CashFlow - 2026.xlsx" original, selecione NewCo ou BSG (não "Ambos").'
+          );
           return;
         }
         const targetEntity = entityView;
@@ -507,7 +519,7 @@ export function FluxoCaixaManager() {
         saveItems(updated, `Importação concluída: ${matched} linhas atualizadas em ${ENTITY_LABELS[targetEntity]}.`);
       } catch (err) {
         console.error(err);
-        alert("Erro ao importar o arquivo. Verifique o formato.");
+        toast.warning("Erro ao processar o arquivo", "Não consegui importar esse arquivo. Confira se o formato está certo e tente de novo.");
       } finally {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }

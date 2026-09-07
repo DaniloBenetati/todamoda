@@ -24,11 +24,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import * as XLSX from "xlsx";
 import { MONTHS_FULL } from "@/components/dre-gerencial/dre-gerencial-manager";
 import { PeriodFilterDropdown, getCurrentQuarterMonthIds } from "@/components/ui/period-filter";
+import { useConfirm } from "@/components/ui/confirm-provider";
 
 const STORAGE_KEY_BUDGET = "toda_moda_budget_data_v2";
 const STORAGE_KEY_DRE = "toda_moda_dre_gerencial_v7";
 
 export function BudgetManager() {
+  const confirmAction = useConfirm();
   const [budgetAccounts, setBudgetAccounts] = useState<DREAccountItem[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
@@ -164,8 +166,13 @@ export function BudgetManager() {
     setBudgetAccounts(updated);
   };
 
-  const handleReset = () => {
-    if (confirm("Deseja redefinir o Budget para os valores padrão?")) {
+  const handleReset = async () => {
+    const ok = await confirmAction("Os valores voltam ao padrão. Não pode ser desfeito.", {
+      title: "Redefinir o Budget?",
+      confirmLabel: "Redefinir",
+      tone: "danger",
+    });
+    if (ok) {
       saveBudget(DRE_ACCOUNTS_DATA, "Budget redefinido com sucesso!");
     }
   };

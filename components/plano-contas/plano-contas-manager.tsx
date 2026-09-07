@@ -25,6 +25,8 @@ import {
   ChevronsUp
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useToast } from "@/components/ui/toast-provider";
+import { useConfirm } from "@/components/ui/confirm-provider";
 
 const STORAGE_KEY = "toda_moda_plano_contas_v8";
 
@@ -36,6 +38,8 @@ export function PlanoContasManager() {
   const [selectedEntity, setSelectedEntity] = useState<string>("all");
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
+  const toast = useToast();
+  const confirmAction = useConfirm();
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
   // Modal State for New/Edit Account
@@ -77,8 +81,13 @@ export function PlanoContasManager() {
   };
 
   // Reset to original spreadsheet plan
-  const handleReset = () => {
-    if (confirm("Deseja realmente restaurar o Plano de Contas padrão? Todas as alterações manuais serão redefinidas.")) {
+  const handleReset = async () => {
+    const ok = await confirmAction("Todas as alterações manuais no Plano de Contas serão redefinidas. Não pode ser desfeito.", {
+      title: "Restaurar o Plano de Contas padrão?",
+      confirmLabel: "Restaurar",
+      tone: "danger",
+    });
+    if (ok) {
       saveToStorage(INITIAL_ACCOUNT_PLAN);
       setCollapsedIds(new Set());
     }
@@ -228,8 +237,13 @@ export function PlanoContasManager() {
   };
 
   // Delete account
-  const handleDelete = (id: string, name: string) => {
-    if (confirm(`Excluir a conta "${name}" do Plano de Contas?`)) {
+  const handleDelete = async (id: string, name: string) => {
+    const ok = await confirmAction(`A conta "${name}" será removida do Plano de Contas. Não pode ser desfeito.`, {
+      title: "Excluir conta?",
+      confirmLabel: "Excluir",
+      tone: "danger",
+    });
+    if (ok) {
       const updated = accounts.filter((a) => a.id !== id);
       saveToStorage(updated);
     }
@@ -263,7 +277,7 @@ export function PlanoContasManager() {
   const handleSaveModal = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingItem.code || !editingItem.name) {
-      alert("Por favor, preencha o código e o nome da conta.");
+      toast.warning("Campos obrigatórios", "Preencha o código e o nome da conta antes de salvar.");
       return;
     }
 

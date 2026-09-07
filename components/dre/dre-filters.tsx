@@ -16,6 +16,7 @@ import {
   Calendar,
   Filter
 } from "lucide-react";
+import { useToast } from "@/components/ui/toast-provider";
 
 interface DREFiltersProps {
   selectedChannel: ChannelKey;
@@ -40,6 +41,7 @@ export function DREFilters({
   toggleExpandAll,
   onOpenTransactions,
 }: DREFiltersProps) {
+  const toast = useToast();
   const getIcon = (iconName: string) => {
     switch (iconName) {
       case "Store":
@@ -143,7 +145,7 @@ export function DREFilters({
             variant="outline"
             size="sm"
             onClick={() => {
-              alert("Exportando DRE em formato Excel (.xlsx) / CSV com todos os canais e lançamentos...");
+              toast.info("Exportando DRE", "Gerando Excel (.xlsx) / CSV com todos os canais e lançamentos...");
             }}
             className="text-xs h-9 gap-1.5"
           >
