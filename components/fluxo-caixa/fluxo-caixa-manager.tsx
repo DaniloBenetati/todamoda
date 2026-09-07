@@ -9,16 +9,17 @@ import {
   CashFlowLineItem,
   CashFlowMonthId,
   CashFlowMonthValue,
+  CashFlowRowType,
+  CashFlowChannel,
 } from "@/data/fluxo-caixa-data";
 import { formatCurrency, formatPercent } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { PeriodFilterDropdown, getCurrentQuarterMonthIds } from "@/components/ui/period-filter";
+import { PeriodFilterDropdown } from "@/components/ui/period-filter";
 import { Badge } from "@/components/ui/badge";
 import {
   Save,
   RotateCcw,
   Download,
-  CheckCircle2,
   X,
   SlidersHorizontal,
   ChevronDown,
@@ -30,9 +31,17 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/components/ui/toast-provider";
 import { useConfirm } from "@/components/ui/confirm-provider";
+import { ImportReviewModal, ImportChannel, ImportProjSummaryEntry } from "@/components/dre-gerencial/import-review-modal";
+import { loadProjChannelMap, saveProjChannelMap, suggestChannel } from "@/components/dre-gerencial/dre-gerencial-manager";
 import * as XLSX from "xlsx";
 
 const STORAGE_KEY_FLUXO = "toda_moda_fluxo_caixa_v1";
+
+// NewCo/BSG não é escolhido por importação — é derivado direto do canal (mesma base da DRE):
+// Franquicias vai para BSG, Tiendas Propias/Venta Producto vão para NewCo.
+function channelToEntity(channel: ImportChannel): CashFlowEntity {
+  return channel === "franquias" ? "bsg" : "newco";
+}
 
 const SEED_ITEMS: CashFlowLineItem[] = [...CASH_FLOW_NEWCO, ...CASH_FLOW_BSG];
 
@@ -44,6 +53,27 @@ function emptyMonths(): MonthMap {
     m[mo.id] = { planned: 0, realized: 0 };
   });
   return m;
+}
+
+export const CHANNEL_LABELS: Record<CashFlowChannel, string> = {
+  tiendas: "Tiendas Propias",
+  produto: "Venta Producto",
+  franquias: "Franquicias",
+};
+
+// Reduz um MonthMap ao recorte de um canal só (Tiendas/Produto/Franquicias), usando o
+// detalhamento gravado na importação — "all" devolve o total normal, sem filtrar.
+function monthsForChannel(months: MonthMap, channel: "all" | CashFlowChannel): MonthMap {
+  if (channel === "all") return months;
+  const out = {} as MonthMap;
+  (Object.keys(months) as CashFlowMonthId[]).forEach((mid) => {
+    const mv = months[mid];
+    out[mid] = {
+      planned: mv?.plannedByChannel?.[channel] || 0,
+      realized: mv?.realizedByChannel?.[channel] || 0,
+    };
+  });
+  return out;
 }
 
 function addMonths(a: MonthMap, b: MonthMap): MonthMap {
@@ -83,6 +113,17 @@ function annualTotal(perMonth: MonthMap): CashFlowMonthValue {
     }),
     { planned: 0, realized: 0 }
   );
+}
+
+// Linhas de saldo (kind "balance") já são cumulativas mês a mês — dezembro já inclui
+// janeiro..novembro. Somar os 12 meses de novo (annualTotal) infla o total absurdamente; o
+// "Total Anual" certo pra essas linhas é simplesmente o valor do último mês.
+function totalForRow(months: MonthMap, kind: string): CashFlowMonthValue {
+  if (kind === "balance") {
+    const lastMonthId = CASH_FLOW_MONTHS[CASH_FLOW_MONTHS.length - 1].id;
+    return months[lastMonthId] || { planned: 0, realized: 0 };
+  }
+  return annualTotal(months);
 }
 
 interface ComputedRow {
@@ -137,6 +178,27 @@ function buildBsgComputed(items: CashFlowLineItem[]) {
   return rows;
 }
 
+// Linha final combinando NewCo + BSG — o "Saldo Final (Acumulado)" de cada entidade já é
+// cumulativo, então soma-se o movimento líquido MENSAL de cada uma (antes de acumular) e só
+// então aplica-se o acúmulo, pra não somar dois saldos já acumulados (o que dobraria o efeito).
+function buildGrandTotal(newcoItems: CashFlowLineItem[], bsgItems: CashFlowLineItem[]): ComputedRow {
+  const newcoIngresos = sumItemsMonths(newcoItems.filter((i) => i.rowType === "income"));
+  const newcoSaidas = addMonths(
+    sumItemsMonths(newcoItems.filter((i) => i.rowType === "expense")),
+    sumItemsMonths(newcoItems.filter((i) => i.rowType === "investment"))
+  );
+  const newcoNetoMes = addMonths(newcoIngresos, newcoSaidas);
+
+  const bsgIngresos = sumItemsMonths(bsgItems.filter((i) => i.section === "Ingresos" && i.rowType === "income"));
+  const bsgEgresos = sumItemsMonths(bsgItems.filter((i) => i.section === "Egresos" && i.rowType === "expense"));
+  const bsgNetoMes = addMonths(bsgIngresos, bsgEgresos);
+
+  const netoMesGeral = addMonths(newcoNetoMes, bsgNetoMes);
+  const saldoFinalGeral = runningBalance(netoMesGeral);
+
+  return { key: "saldo-final-geral", label: "Saldo Final (Acumulado) — NewCo + BSG", section: "Geral", kind: "balance", months: saldoFinalGeral };
+}
+
 const ENTITY_SECTIONS: Record<CashFlowEntity, string[]> = {
   newco: ["Ingresos Operativos", "Egresos", "Investimentos"],
   bsg: ["Ingresos", "Egresos", "Aporte Líquido"],
@@ -187,10 +249,6 @@ const BSG_CODE_OVERRIDES: Record<string, string> = {
   "30.1.3": "Banco", // Intereses Bancarios
 };
 
-function isBsgEntityName(name: string): boolean {
-  const upper = name.toUpperCase();
-  return upper.includes("BSG") || upper.includes("BLUE STAR");
-}
 
 function excelSerialToYearMonth(serial: number): { year: number; month: number } | null {
   if (!serial || typeof serial !== "number" || isNaN(serial)) return null;
@@ -233,15 +291,25 @@ export function FluxoCaixaManager() {
   const confirmAction = useConfirm();
   const [items, setItems] = useState<CashFlowLineItem[]>([]);
   const [entityView, setEntityView] = useState<EntityView>("both");
+  // Filtro de Projeto: "all" mostra o total normal; escolhendo um canal, todo o Fluxo de Caixa
+  // (linhas e totais calculados) passa a refletir só o que caiu naquele Projeto na importação.
+  const [channelView, setChannelView] = useState<"all" | CashFlowChannel>("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
-  const [savedSuccess, setSavedSuccess] = useState<string | null>(null);
+  const [pendingImport, setPendingImport] = useState<{
+    fileName: string;
+    data: any[][];
+    field: "planned" | "realized";
+    fieldLabel: string;
+    summary: ImportProjSummaryEntry[];
+  } | null>(null);
 
+  // Mostra os 12 meses por padrão (não só o trimestre atual) — igual à DRE, pra não esconder
+  // dados de outros meses enquanto se está validando um import.
   const [visibleMonths, setVisibleMonths] = useState<Record<string, boolean>>(() => {
-    const quarter = new Set(getCurrentQuarterMonthIds());
     const m: Record<string, boolean> = { total: true };
-    CASH_FLOW_MONTHS.forEach((mo) => (m[mo.id] = quarter.has(mo.id)));
+    CASH_FLOW_MONTHS.forEach((mo) => (m[mo.id] = true));
     return m;
   });
 
@@ -268,12 +336,19 @@ export function FluxoCaixaManager() {
     }
   }, []);
 
+  // Visão usada para renderizar/calcular a tela: com um Projeto selecionado, cada linha mostra só
+  // o recorte daquele canal (o restante do app — totais calculados, exportação — nem sabe que
+  // está filtrado, só recebe itens já reduzidos ao canal escolhido).
+  const displayItems = useMemo(() => {
+    if (channelView === "all") return items;
+    return items.map((it) => ({ ...it, months: monthsForChannel(it.months, channelView) }));
+  }, [items, channelView]);
+
   const saveItems = (data: CashFlowLineItem[], msg = "Fluxo de Caixa salvo com sucesso!") => {
     setItems(data);
     try {
       localStorage.setItem(STORAGE_KEY_FLUXO, JSON.stringify(data));
-      setSavedSuccess(msg);
-      setTimeout(() => setSavedSuccess(null), 4000);
+      toast.success(msg);
     } catch (e) {
       console.error("Erro ao salvar fluxo de caixa:", e);
     }
@@ -297,13 +372,20 @@ export function FluxoCaixaManager() {
   const handleManualSave = () => saveItems(items);
 
   const handleReset = async () => {
-    const ok = await confirmAction("Os valores voltam ao original da planilha. Não pode ser desfeito.", {
-      title: "Redefinir o Fluxo de Caixa?",
-      confirmLabel: "Redefinir",
-      tone: "danger",
-    });
+    const ok = await confirmAction(
+      "Isso zera Orçado e Realizado de todos os meses, para você importar do zero e conferir se os dados batem. Não pode ser desfeito.",
+      { title: "Zerar o Fluxo de Caixa?", confirmLabel: "Zerar", tone: "danger" }
+    );
     if (ok) {
-      saveItems(SEED_ITEMS, "Fluxo de Caixa redefinido com sucesso!");
+      // O mapeamento Projeto -> Canal é compartilhado com a DRE (mesma base de dados), então
+      // "Zerar Tudo" aqui não mexe nele — zerar isso afetaria a DRE também.
+      const clean = SEED_ITEMS.map((item) => ({
+        ...item,
+        months: Object.fromEntries(
+          Object.keys(item.months).map((monthId) => [monthId, { planned: 0, realized: 0 }])
+        ) as CashFlowLineItem["months"],
+      }));
+      saveItems(clean, "Fluxo de Caixa zerado com sucesso!");
     }
   };
 
@@ -324,14 +406,15 @@ export function FluxoCaixaManager() {
     | { type: "entity-banner"; entity: CashFlowEntity }
     | { type: "section"; entity: CashFlowEntity; section: string }
     | { type: "leaf"; item: CashFlowLineItem }
-    | { type: "computed"; entity: CashFlowEntity; row: ComputedRow };
+    | { type: "computed"; entity: CashFlowEntity; row: ComputedRow }
+    | { type: "grand-total"; row: ComputedRow };
 
   const renderRows: RenderRow[] = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
     const out: RenderRow[] = [];
 
     visibleEntities.forEach((entity) => {
-      const entityAllItems = items.filter((i) => i.entity === entity);
+      const entityAllItems = displayItems.filter((i) => i.entity === entity);
       const filtered = term
         ? entityAllItems.filter((i) => i.name.toLowerCase().includes(term) || i.section.toLowerCase().includes(term))
         : entityAllItems;
@@ -357,8 +440,16 @@ export function FluxoCaixaManager() {
       });
     });
 
+    // Total combinando NewCo + BSG: só faz sentido com as duas entidades visíveis e sem busca
+    // ativa (que já filtra pra um subconjunto de linhas).
+    if (!term && visibleEntities.length === 2) {
+      const newcoItems = displayItems.filter((i) => i.entity === "newco");
+      const bsgItems = displayItems.filter((i) => i.entity === "bsg");
+      out.push({ type: "grand-total", row: buildGrandTotal(newcoItems, bsgItems) });
+    }
+
     return out;
-  }, [items, visibleEntities, collapsedSections, searchTerm]);
+  }, [displayItems, visibleEntities, collapsedSections, searchTerm]);
 
   const visibleLineCount = useMemo(
     () => renderRows.filter((r) => r.type === "leaf").length,
@@ -374,17 +465,18 @@ export function FluxoCaixaManager() {
 
     renderRows.forEach((r) => {
       if (r.type === "section" || r.type === "entity-banner") return;
-      const entity = r.type === "leaf" ? r.item.entity : r.entity;
+      const entityLabel = r.type === "leaf" ? ENTITY_LABELS[r.item.entity] : r.type === "grand-total" ? "NewCo + BSG" : ENTITY_LABELS[r.entity];
       const label = r.type === "leaf" ? r.item.name : r.row.label;
       const section = r.type === "leaf" ? r.item.section : r.row.section;
       const months = r.type === "leaf" ? r.item.months : r.row.months;
-      csv += `"${ENTITY_LABELS[entity]}","${section}","${label}"`;
+      const kind = r.type === "leaf" ? "leaf" : r.row.kind;
+      csv += `"${entityLabel}","${section}","${label}"`;
       activeMonthsList.forEach((m) => {
         const p = months[m.id]?.planned || 0;
         const rl = months[m.id]?.realized || 0;
         csv += `,${p.toFixed(2)},${rl.toFixed(2)},${(rl - p).toFixed(2)}`;
       });
-      const total = annualTotal(months);
+      const total = totalForRow(months, kind);
       csv += `,${total.planned.toFixed(2)},${total.realized.toFixed(2)},${(total.realized - total.planned).toFixed(2)}\n`;
     });
 
@@ -397,9 +489,163 @@ export function FluxoCaixaManager() {
     document.body.removeChild(link);
   };
 
+  // Aplica o mapeamento Projeto -> Entidade (NewCo/BSG) já confirmado sobre os dados lidos do
+  // arquivo: acha o mês pela data, a entidade pelo Projeto, a linha do fluxo pelo código de conta,
+  // e soma tudo por entidade/linha/mês.
+  const finalizeFluxoImport = (
+    data: any[][],
+    field: "planned" | "realized",
+    fieldLabel: string,
+    mapping: Record<string, ImportChannel>,
+    fileName: string,
+    summary: ImportProjSummaryEntry[]
+  ) => {
+    type AggCell = { total: number; byChannel: Partial<Record<CashFlowChannel, number>> };
+    const agg: Record<CashFlowEntity, Record<string, Partial<Record<CashFlowMonthId, AggCell>>>> = {
+      newco: {},
+      bsg: {},
+    };
+    let mapped = 0;
+    let unmapped = 0;
+    let outOfYear = 0;
+    let outOfYearTotal = 0;
+    let noProjTotal = 0;
+    let grandTotal = 0;
+    const unmappedCodes = new Set<string>();
+
+    // O Valor do arquivo vem sempre positivo (mesma situação que corrigimos na DRE) — o sinal
+    // certo é decidido pelo tipo da linha de destino (Ingreso soma, Egreso/Investimento reduz),
+    // não pelo sinal bruto da planilha.
+    const rowTypeByKey: Record<string, CashFlowRowType> = {};
+    items.forEach((it) => {
+      rowTypeByKey[`${it.entity}::${it.name}`] = it.rowType;
+    });
+
+    for (let i = 2; i < data.length; i++) {
+      const row = data[i];
+      const categoria = String(row?.[6] ?? "").trim();
+      const amount = Number(row?.[4]);
+      if (!categoria || !amount) continue; // pula linha de total/rodapé da planilha (sem Categoria)
+
+      const dateInfo = excelSerialToYearMonth(Number(row?.[0]));
+      if (!dateInfo || dateInfo.year !== 2026) {
+        outOfYear++;
+        outOfYearTotal += Math.abs(amount);
+        continue;
+      }
+      const monthId = String(dateInfo.month).padStart(2, "0") as CashFlowMonthId;
+
+      const rawProj = String(row?.[7] ?? row?.[8] ?? "").trim();
+      const proj = rawProj.toUpperCase() || "(SEM PROJETO)";
+      const channel = mapping[proj] || suggestChannel(proj);
+      const entity = channelToEntity(channel);
+      if (proj === "(SEM PROJETO)") noProjTotal += Math.abs(amount);
+
+      const codeMatch = categoria.match(/^([0-9.]+)/);
+      const fullCode = codeMatch ? codeMatch[1].replace(/\.$/, "") : "";
+      const group = fullCode.split(".").slice(0, 2).join(".");
+
+      let leaf: string | undefined =
+        entity === "bsg" ? BSG_CODE_OVERRIDES[fullCode] || BSG_CODE_TO_LEAF[group] : NEWCO_CODE_TO_LEAF[group];
+
+      if (!leaf) {
+        leaf = "Otros";
+        unmapped++;
+        if (fullCode) unmappedCodes.add(fullCode);
+      } else {
+        mapped++;
+      }
+
+      // Só linha de Ingreso fica positiva; Egreso/Investimento (e qualquer linha que eu não
+      // reconheça) entra negativo — Contas a Pagar/Pagas são sempre pagamentos (saída de caixa).
+      const rowType = rowTypeByKey[`${entity}::${leaf}`];
+      const magnitude = Math.abs(amount);
+      const signedAmount = rowType === "income" ? magnitude : -magnitude;
+
+      grandTotal += magnitude;
+      agg[entity][leaf] = agg[entity][leaf] || {};
+      if (!agg[entity][leaf][monthId]) agg[entity][leaf][monthId] = { total: 0, byChannel: {} };
+      const cell = agg[entity][leaf][monthId]!;
+      cell.total += signedAmount;
+      cell.byChannel[channel] = (cell.byChannel[channel] || 0) + signedAmount;
+    }
+
+    const byChannelField = field === "planned" ? "plannedByChannel" : "realizedByChannel";
+    const updated = items.map((item) => {
+      const leafAgg = agg[item.entity]?.[item.name];
+      if (!leafAgg) return item;
+      const months = { ...item.months };
+      Object.entries(leafAgg).forEach(([monthId, cell]) => {
+        if (!cell) return;
+        months[monthId as CashFlowMonthId] = {
+          ...months[monthId as CashFlowMonthId],
+          [field]: cell.total,
+          [byChannelField]: cell.byChannel,
+        };
+      });
+      return { ...item, months };
+    });
+
+    // Salva no MESMO mapeamento que a DRE usa — confirmar aqui já vale lá, e vice-versa.
+    saveProjChannelMap({ ...loadProjChannelMap(), ...mapping });
+
+    const totals = summary.reduce(
+      (acc, s) => {
+        acc[channelToEntity(mapping[s.proj] || s.channel)] += s.amount;
+        return acc;
+      },
+      { newco: 0, bsg: 0 } as Record<CashFlowEntity, number>
+    );
+
+    saveItems(
+      updated,
+      `Importação (${fieldLabel}) concluída: ${mapped} lançamentos mapeados, ${unmapped} sem categoria reconhecida (agrupados em "Otros"), ${outOfYear} fora de 2026.`
+    );
+    setPendingImport(null);
+
+    // Fica na tela até você dispensar (não some sozinho como o toast de sucesso). O "Valor Total
+    // do Arquivo" aqui é a soma de TUDO (mesmo cálculo da tela de revisão) — pra bater exatamente
+    // com o número que você viu lá. O que ficou de fora do Fluxo de Caixa (ex.: fora de 2026)
+    // aparece à parte, subtraído desse total.
+    const fileTotalLikeReview = grandTotal + outOfYearTotal;
+    toast.warning(
+      `Valor Total do Arquivo: ${formatCurrency(fileTotalLikeReview)}`,
+      `"${fileName}" — ${fieldLabel}. Entrou no Fluxo de Caixa: ${formatCurrency(grandTotal)} (NewCo ${formatCurrency(totals.newco)}, BSG ${formatCurrency(totals.bsg)}).${
+        outOfYearTotal > 0 ? ` Ficou de fora (fora de 2026): ${formatCurrency(outOfYearTotal)}.` : ""
+      }`
+    );
+
+    console.log("[Fluxo de Caixa import] resumo:", {
+      valorTotalArquivo: formatCurrency(fileTotalLikeReview),
+      entrouNoFluxoDeCaixa: formatCurrency(grandTotal),
+      porEntidade: { newco: formatCurrency(totals.newco), bsg: formatCurrency(totals.bsg) },
+      semCategoriaReconhecida: unmapped,
+      codigosNaoMapeados: Array.from(unmappedCodes),
+      forDoAno2026: { count: outOfYear, total: formatCurrency(outOfYearTotal) },
+      semProjeto: formatCurrency(noProjTotal),
+    });
+
+    if (noProjTotal > 0) {
+      toast.warning(
+        "Lançamento sem Projeto",
+        `${formatCurrency(noProjTotal)} do arquivo não tinha Projeto preenchido — foi para "${ENTITY_LABELS[channelToEntity(suggestChannel("(SEM PROJETO)"))]}" por padrão. Confira se isso é esperado.`
+      );
+    }
+    if (outOfYear > 0) {
+      toast.warning("Lançamentos fora de 2026", `${outOfYear} lançamento(s) do arquivo têm data fora de 2026 e não entraram no Fluxo de Caixa.`);
+    }
+    if (unmapped > 0) {
+      const sample = Array.from(unmappedCodes).slice(0, 8).join(", ");
+      toast.warning(
+        "Código sem categoria no Fluxo de Caixa",
+        `${unmapped} lançamento(s) com código de conta sem linha correspondente aqui — foram agrupados em "Otros". Códigos: ${sample}${unmappedCodes.size > 8 ? "..." : ""}.`
+      );
+    }
+  };
+
   // Importa lançamentos de "Contas a Pagar" (-> Ppto) ou "Contas Pagas" (-> Real): planilhas
   // exportadas do sistema de contas a pagar/pagas, com uma linha por lançamento, identificadas
-  // pela empresa legal (coluna "Minha Empresa") e pelo código do Plano de Contas (coluna "Categoria",
+  // pelo Projeto (mesma coluna usada na DRE) e pelo código do Plano de Contas (coluna "Categoria",
   // ex.: "13.1.1 - Honorarios Contabilidad - (C)"). Também aceita reimportar a própria planilha
   // "CashFlow - 2026.xlsx" original (layout de 4 colunas por mês, casado por nome de linha).
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -424,64 +670,48 @@ export function FluxoCaixaManager() {
 
         if (isLedgerFormat) {
           const field: "planned" | "realized" = hasAPagar ? "planned" : "realized";
-          const agg: Record<CashFlowEntity, Record<string, Partial<Record<CashFlowMonthId, number>>>> = {
-            newco: {},
-            bsg: {},
-          };
-          let mapped = 0;
-          let unmapped = 0;
-          let outOfYear = 0;
-          const unmappedCodes = new Set<string>();
+          const fieldLabel = field === "planned" ? "Orçado (Ppto)" : "Realizado";
 
+          // 1ª passada: só agrupa por Projeto (mesma coluna e mesma lógica da DRE) pra montar a
+          // tela de revisão — o rollup por código de conta acontece depois, já com a entidade
+          // (NewCo/BSG) confirmada.
+          const projGroups: Record<string, { rawLabel: string; count: number; amount: number }> = {};
           for (let i = 2; i < data.length; i++) {
             const row = data[i];
-            const company = String(row?.[1] ?? "").trim();
-            if (!company) continue; // pula linha de total/em branco
+            const categoria = String(row?.[6] ?? "").trim();
             const amount = Number(row?.[4]);
-            if (!amount) continue;
-            const dateInfo = excelSerialToYearMonth(Number(row?.[0]));
-            if (!dateInfo || dateInfo.year !== 2026) {
-              outOfYear++;
-              continue;
+            if (!categoria || !amount) continue; // pula linha de total/rodapé da planilha (sem Categoria)
+            const rawProj = String(row?.[7] ?? row?.[8] ?? "").trim();
+            const proj = rawProj.toUpperCase() || "(SEM PROJETO)";
+            if (!projGroups[proj]) {
+              projGroups[proj] = { rawLabel: rawProj || "(sem projeto)", count: 0, amount: 0 };
             }
-            const monthId = String(dateInfo.month).padStart(2, "0") as CashFlowMonthId;
-            const entity: CashFlowEntity = isBsgEntityName(company) ? "bsg" : "newco";
-
-            const categoria = String(row?.[6] ?? "");
-            const codeMatch = categoria.match(/^([0-9.]+)/);
-            const fullCode = codeMatch ? codeMatch[1].replace(/\.$/, "") : "";
-            const group = fullCode.split(".").slice(0, 2).join(".");
-
-            let leaf: string | undefined =
-              entity === "bsg" ? BSG_CODE_OVERRIDES[fullCode] || BSG_CODE_TO_LEAF[group] : NEWCO_CODE_TO_LEAF[group];
-
-            if (!leaf) {
-              leaf = "Otros";
-              unmapped++;
-              if (fullCode) unmappedCodes.add(fullCode);
-            } else {
-              mapped++;
-            }
-
-            agg[entity][leaf] = agg[entity][leaf] || {};
-            agg[entity][leaf][monthId] = (agg[entity][leaf][monthId] || 0) + amount;
+            projGroups[proj].count += 1;
+            projGroups[proj].amount += Math.abs(amount);
           }
 
-          const updated = items.map((item) => {
-            const leafAgg = agg[item.entity]?.[item.name];
-            if (!leafAgg) return item;
-            const months = { ...item.months };
-            (Object.entries(leafAgg) as [CashFlowMonthId, number][]).forEach(([monthId, sum]) => {
-              months[monthId] = { ...months[monthId], [field]: sum };
-            });
-            return { ...item, months };
-          });
+          // Mesmo mapeamento Projeto -> Canal da DRE (mesma base de dados) — se já foi confirmado
+          // lá, não pergunta de novo aqui.
+          const persistedMap = loadProjChannelMap();
+          const distinctProjs = Object.keys(projGroups);
+          const summary: ImportProjSummaryEntry[] = distinctProjs
+            .map((proj) => ({
+              proj,
+              rawLabel: projGroups[proj].rawLabel,
+              count: projGroups[proj].count,
+              amount: projGroups[proj].amount,
+              channel: persistedMap[proj] || suggestChannel(proj),
+              isNew: !persistedMap[proj],
+            }))
+            .sort((a, b) => b.amount - a.amount);
 
-          const fieldLabel = field === "planned" ? "Ppto" : "Real";
-          saveItems(
-            updated,
-            `Importação (${fieldLabel}) concluída: ${mapped} lançamentos mapeados, ${unmapped} sem categoria reconhecida (agrupados em "Otros"), ${outOfYear} fora de 2026.`
-          );
+          const hasNew = summary.some((s) => s.isNew);
+          if (!hasNew) {
+            const mapping = Object.fromEntries(summary.map((s) => [s.proj, s.channel])) as Record<string, ImportChannel>;
+            finalizeFluxoImport(data, field, fieldLabel, mapping, file.name, summary);
+          } else {
+            setPendingImport({ fileName: file.name, data, field, fieldLabel, summary });
+          }
           return;
         }
 
@@ -587,12 +817,6 @@ export function FluxoCaixaManager() {
           </div>
         </div>
 
-        {savedSuccess && (
-          <div className="flex items-center gap-2 p-3 bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs font-semibold animate-in fade-in slide-in-from-top-2">
-            <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-            <span>{savedSuccess}</span>
-          </div>
-        )}
 
         {/* Table */}
         <div className="border border-zinc-200 dark:border-zinc-800 bg-card overflow-hidden">
@@ -678,15 +902,19 @@ export function FluxoCaixaManager() {
                       );
                     }
 
-                    const isComputed = r.type === "computed";
+                    const row = r.type === "computed" || r.type === "grand-total" ? r.row : null;
+                    const isComputed = row !== null;
                     const leafItem = r.type === "leaf" ? r.item : null;
-                    const label = isComputed ? r.row.label : (leafItem as CashFlowLineItem).name;
-                    const months = isComputed ? r.row.months : (leafItem as CashFlowLineItem).months;
-                    const kind = isComputed ? r.row.kind : "leaf";
+                    const label = row ? row.label : (leafItem as CashFlowLineItem).name;
+                    const months = row ? row.months : (leafItem as CashFlowLineItem).months;
+                    const kind = row ? row.kind : "leaf";
 
                     let rowBg = "hover:bg-zinc-50/80 dark:hover:bg-zinc-900/60 transition-colors";
                     let stickyBg = "bg-card";
-                    if (kind === "result" || kind === "balance") {
+                    if (r.type === "grand-total") {
+                      rowBg = "bg-zinc-200 dark:bg-zinc-800 font-black border-y-2 border-zinc-400 dark:border-zinc-600";
+                      stickyBg = "bg-zinc-200 dark:bg-zinc-800 font-black";
+                    } else if (kind === "result" || kind === "balance") {
                       rowBg = "bg-zinc-100/95 dark:bg-zinc-900/95 font-bold border-y border-zinc-300 dark:border-zinc-700";
                       stickyBg = "bg-zinc-100/95 dark:bg-zinc-900/95 font-bold";
                     } else if (kind === "total") {
@@ -695,7 +923,7 @@ export function FluxoCaixaManager() {
                     }
 
                     return (
-                      <tr key={isComputed ? r.row.key : r.item.id} className={rowBg}>
+                      <tr key={row ? row.key : (r as { item: CashFlowLineItem }).item.id} className={rowBg}>
                         <td className={`sticky left-0 z-10 border-r-2 border-zinc-400 dark:border-zinc-600 py-1.5 px-3 ${stickyBg} shadow-[2px_0_4px_-1px_rgba(0,0,0,0.1)]`}>
                           <div className="flex items-center gap-1.5 pl-4">
                             {kind === "leaf" && <span className="font-mono text-[10px] font-bold text-zinc-400 dark:text-zinc-500">└</span>}
@@ -710,7 +938,7 @@ export function FluxoCaixaManager() {
                             <React.Fragment key={m.id}>
                               {showPlanned && (
                                 <td className="py-1 px-1.5 text-right border-r border-zinc-200 dark:border-zinc-800 font-mono">
-                                  {kind === "leaf" ? (
+                                  {kind === "leaf" && channelView === "all" ? (
                                     <input
                                       type="number"
                                       step="any"
@@ -726,7 +954,7 @@ export function FluxoCaixaManager() {
                               )}
                               {showRealized && (
                                 <td className="py-1 px-1.5 text-right border-r border-zinc-200 dark:border-zinc-800 font-mono">
-                                  {kind === "leaf" ? (
+                                  {kind === "leaf" && channelView === "all" ? (
                                     <input
                                       type="number"
                                       step="any"
@@ -757,7 +985,7 @@ export function FluxoCaixaManager() {
                         {visibleMonths.total && (
                           <>
                             {(() => {
-                              const total = annualTotal(months);
+                              const total = totalForRow(months, kind);
                               return (
                                 <>
                                   <td className="py-1 px-1.5 text-right border-r border-zinc-200 dark:border-zinc-800 font-mono bg-zinc-100/50 dark:bg-zinc-900/50 font-bold">
@@ -826,7 +1054,7 @@ export function FluxoCaixaManager() {
                 className="w-full flex items-center justify-center gap-2 py-2 px-3 border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs font-semibold text-zinc-800 dark:text-zinc-200 transition-colors"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
-                <span>REDEFINIR PARA ORIGINAL</span>
+                <span>ZERAR TUDO</span>
               </button>
 
               <button
@@ -839,6 +1067,40 @@ export function FluxoCaixaManager() {
             </div>
 
             <div className="border-t border-zinc-200 dark:border-zinc-800 pt-3 space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-foreground mb-1.5">Projeto</label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={() => setChannelView("all")}
+                    className={`py-1.5 text-[11px] font-bold border transition-colors ${
+                      channelView === "all"
+                        ? "bg-zinc-700 text-white border-zinc-700 shadow-2xs"
+                        : "border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                    }`}
+                  >
+                    Todos
+                  </button>
+                  {(Object.keys(CHANNEL_LABELS) as CashFlowChannel[]).map((ch) => (
+                    <button
+                      key={ch}
+                      onClick={() => setChannelView(ch)}
+                      className={`py-1.5 text-[11px] font-bold border transition-colors ${
+                        channelView === ch
+                          ? "bg-zinc-700 text-white border-zinc-700 shadow-2xs"
+                          : "border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                      }`}
+                    >
+                      {CHANNEL_LABELS[ch]}
+                    </button>
+                  ))}
+                </div>
+                {channelView !== "all" && (
+                  <p className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
+                    Mostrando só {CHANNEL_LABELS[channelView]}. Edição manual desativada nesse filtro — volte para "Todos" pra editar.
+                  </p>
+                )}
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-foreground mb-1.5">Período</label>
                 <PeriodFilterDropdown year="2026" months={CASH_FLOW_MONTHS} value={visibleMonths} onChange={setVisibleMonths} />
@@ -884,6 +1146,17 @@ export function FluxoCaixaManager() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {pendingImport && (
+        <ImportReviewModal
+          fileName={`${pendingImport.fileName} — ${pendingImport.fieldLabel}`}
+          summary={pendingImport.summary}
+          onCancel={() => setPendingImport(null)}
+          onConfirm={(mapping) =>
+            finalizeFluxoImport(pendingImport.data, pendingImport.field, pendingImport.fieldLabel, mapping, pendingImport.fileName, pendingImport.summary)
+          }
+        />
+      )}
     </div>
   );
 }

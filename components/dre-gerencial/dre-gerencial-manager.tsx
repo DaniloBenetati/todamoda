@@ -31,9 +31,12 @@ import { useConfirm } from "@/components/ui/confirm-provider";
 
 const STORAGE_KEY_DRE = "toda_moda_dre_gerencial_v7";
 const STORAGE_KEY_BUDGET = "toda_moda_budget_data_v2";
-const STORAGE_KEY_PROJ_MAP = "toda_moda_dre_proj_channel_map_v1";
+// Exportado: DRE e Fluxo de Caixa usam a mesma base de Contas a Pagar/Pagas, então compartilham
+// este mapeamento Projeto -> Canal (Tiendas Propias/Venta Producto/Franquicias) — confirmar em um
+// módulo já vale para o outro, sem perguntar de novo.
+export const STORAGE_KEY_PROJ_MAP = "toda_moda_dre_proj_channel_map_v1";
 
-function loadProjChannelMap(): Record<string, ImportChannel> {
+export function loadProjChannelMap(): Record<string, ImportChannel> {
   try {
     const saved = localStorage.getItem(STORAGE_KEY_PROJ_MAP);
     return saved ? JSON.parse(saved) : {};
@@ -42,7 +45,7 @@ function loadProjChannelMap(): Record<string, ImportChannel> {
   }
 }
 
-function saveProjChannelMap(map: Record<string, ImportChannel>) {
+export function saveProjChannelMap(map: Record<string, ImportChannel>) {
   try {
     localStorage.setItem(STORAGE_KEY_PROJ_MAP, JSON.stringify(map));
   } catch (e) {
@@ -50,7 +53,7 @@ function saveProjChannelMap(map: Record<string, ImportChannel>) {
   }
 }
 
-function suggestChannel(proj: string): ImportChannel {
+export function suggestChannel(proj: string): ImportChannel {
   if (proj.includes("FRANQUIA") || proj.includes("FRANQUICIA")) return "franquias";
   if (proj.includes("PRODUCTO") || proj.includes("BSB") || proj.includes("MTZ") || proj.includes("BSG")) return "produto";
   return "tiendas";

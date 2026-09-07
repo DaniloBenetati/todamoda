@@ -3,9 +3,16 @@
 
 export type CashFlowEntity = "newco" | "bsg";
 
+// Mesmos 3 canais/projetos usados na DRE (Tiendas Propias/Venta Producto/Franquicias) — NewCo
+// hoje mistura Tiendas e Producto juntos, então o detalhamento por canal permite ver cada um
+// individualmente através do filtro de Projeto.
+export type CashFlowChannel = "tiendas" | "produto" | "franquias";
+
 export interface CashFlowMonthValue {
   planned: number;
   realized: number;
+  plannedByChannel?: Partial<Record<CashFlowChannel, number>>;
+  realizedByChannel?: Partial<Record<CashFlowChannel, number>>;
 }
 
 export type CashFlowMonthId = "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12";
