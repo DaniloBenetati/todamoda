@@ -3,6 +3,9 @@
 export interface DREChannelValues {
   planned: number;
   realized: number;
+  // Realizado quebrado por mês ("01".."12"), preenchido pela importação de Excel.
+  // `realized` é sempre a soma destes valores; é o que sustenta a coluna de cada mês na tela.
+  realizedByMonth?: Record<string, number>;
   plannedPct?: number;
   realizedPct?: number;
 }

@@ -23,7 +23,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import * as XLSX from "xlsx";
 import { ImportReviewModal, ImportChannel, ImportProjSummaryEntry } from "./import-review-modal";
-import { PeriodFilterDropdown, getCurrentQuarterMonthIds } from "@/components/ui/period-filter";
+import { PeriodFilterDropdown } from "@/components/ui/period-filter";
 
 const STORAGE_KEY_DRE = "toda_moda_dre_gerencial_v7";
 const STORAGE_KEY_BUDGET = "toda_moda_budget_data_v2";
@@ -52,6 +52,139 @@ function suggestChannel(proj: string): ImportChannel {
   return "tiendas";
 }
 
+// Acha, pelo cabeçalho (linha 1 do arquivo, já que os dados começam na linha 2), a coluna cujo
+// texto bate com uma das palavras-chave (nessa ordem de prioridade). -1 se nenhuma bater.
+function findColIndexByHeader(headerRow: any[] | undefined, keywords: string[]): number {
+  if (!headerRow) return -1;
+  for (const kw of keywords) {
+    for (let i = 0; i < headerRow.length; i++) {
+      const h = String(headerRow[i] || "").toLowerCase();
+      if (h.includes(kw)) return i;
+    }
+  }
+  return -1;
+}
+
+// Converte o valor de uma célula de data (serial do Excel, Date, ou texto dd/mm/aaaa) no id do
+// mês ("01".."12"). Retorna null se não conseguir reconhecer o formato.
+function parseMonthId(value: any): string | null {
+  if (value === null || value === undefined || value === "") return null;
+
+  if (typeof value === "number" && isFinite(value)) {
+    // Serial de data do Excel (dias desde 1899-12-30).
+    const epoch = Date.UTC(1899, 11, 30);
+    const date = new Date(epoch + value * 86400000);
+    if (!isNaN(date.getTime())) return String(date.getUTCMonth() + 1).padStart(2, "0");
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return String(value.getMonth() + 1).padStart(2, "0");
+  }
+
+  const str = String(value).trim();
+  const dmy = str.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+  if (dmy) return String(Number(dmy[2])).padStart(2, "0");
+
+  const ymd = str.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  if (ymd) return String(Number(ymd[2])).padStart(2, "0");
+
+  return null;
+}
+
+// Linhas "indicador" (EBITDA, PBT, Margem, etc.) não têm código de conta próprio — nunca recebem
+// lançamento importado direto, então precisam ser calculadas a partir de outras linhas do plano
+// (identificadas pelo número de linha original da DRE, campo `row`). Cada entrada é
+// {row de origem, sinal}: sinal -1 para uma linha de custo que precisa ser subtraída (as linhas de
+// custo em si — Sueldos, Alquileres etc. — ficam sempre positivas, como "quanto foi gasto";
+// só o sinal aqui decide se aquilo soma ou reduz o indicador). O cálculo é feito por canal
+// (Tiendas/Produto/Franquicias — pense em cada um como uma DRE própria) e depois consolidado.
+//
+// Desde que o import passou a gravar despesas já negativas (só Receita fica positiva — ver
+// `isRevenueCategory` em finalizeImport), todo mundo aqui é somado (sign: 1), igual ao Excel
+// original: cada linha de origem já carrega o sinal certo, o totalizador só soma.
+const ROLLUP_BY_ROW: Record<number, { row: number; sign: 1 | -1 }[]> = {
+  20: [{ row: 12, sign: 1 }, { row: 16, sign: 1 }], // CMg Operativo = Ventas Netas + CMV (CMV já vem negativo)
+  34: [{ row: 30, sign: 1 }], // CMg Franquicias = Ingresso Neto Franquicias
+  36: [{ row: 20, sign: 1 }, { row: 34, sign: 1 }], // CMg Total
+  192: [
+    { row: 38, sign: 1 }, { row: 58, sign: 1 }, { row: 66, sign: 1 }, { row: 80, sign: 1 },
+    { row: 92, sign: 1 }, { row: 98, sign: 1 }, { row: 109, sign: 1 }, { row: 119, sign: 1 },
+    { row: 122, sign: 1 }, { row: 126, sign: 1 }, { row: 174, sign: 1 }, { row: 182, sign: 1 },
+    { row: 185, sign: 1 }, { row: 189, sign: 1 },
+  ], // Gastos Canales (soma das 14 categorias operacionais, já negativas)
+  196: [{ row: 36, sign: 1 }, { row: 192, sign: 1 }], // Margen Operacional = CMg Total + Gastos Canales
+  322: [
+    { row: 198, sign: 1 }, { row: 218, sign: 1 }, { row: 222, sign: 1 }, { row: 232, sign: 1 },
+    { row: 238, sign: 1 }, { row: 242, sign: 1 }, { row: 253, sign: 1 }, { row: 263, sign: 1 },
+    { row: 311, sign: 1 }, { row: 319, sign: 1 },
+  ], // Gastos AACC (soma das 10 categorias corporativas, já negativas)
+  // 324/325/326 (EBITDA por segmento) e 364/365/366 (PBT por segmento) não entram aqui de propósito:
+  // no Excel original elas existiam por causa do truque de "uma coluna por segmento"; aqui cada
+  // canal já é uma coluna própria em 327/367, então essas linhas ficariam idênticas entre si — só
+  // duplicavam visualmente o mesmo número em Tiendas/Produto/Franquicias/Total.
+  327: [{ row: 196, sign: 1 }, { row: 322, sign: 1 }], // EBITDA - Total
+  367: [{ row: 327, sign: 1 }, { row: 332, sign: 1 }, { row: 334, sign: 1 }, { row: 340, sign: 1 }, { row: 354, sign: 1 }, { row: 357, sign: 1 }], // PBT
+};
+
+const ROLLUP_CHANNELS: ChannelType[] = ["tiendas", "produto", "franquias"];
+
+// Recalcula todas as linhas de indicador (ROLLUP_BY_ROW) a partir das linhas de origem já
+// existentes em `accounts` (populadas pela importação). Processa em ordem crescente de `row`
+// para que indicadores que dependem de outros indicadores (ex: 196 usa 192) já saiam corretos.
+function computeIndicatorRows(accounts: DREAccountItem[]): DREAccountItem[] {
+  const byRow = new Map<number, DREAccountItem>();
+  accounts.forEach((a) => {
+    if (a.row !== undefined) byRow.set(a.row, a);
+  });
+
+  const order = Object.keys(ROLLUP_BY_ROW).map(Number).sort((a, b) => a - b);
+
+  order.forEach((targetRow) => {
+    const target = byRow.get(targetRow);
+    const formula = ROLLUP_BY_ROW[targetRow];
+    if (!target) return;
+
+    const newValues: any = {};
+    const consolByMonth: Record<string, number> = {};
+
+    ROLLUP_CHANNELS.forEach((ch) => {
+      const monthIds = new Set<string>();
+      formula.forEach((f) => {
+        const src = byRow.get(f.row);
+        Object.keys(src?.values?.[ch]?.realizedByMonth || {}).forEach((m) => monthIds.add(m));
+      });
+
+      const rbm: Record<string, number> = {};
+      monthIds.forEach((m) => {
+        let sum = 0;
+        formula.forEach((f) => {
+          const src = byRow.get(f.row);
+          sum += f.sign * (src?.values?.[ch]?.realizedByMonth?.[m] || 0);
+        });
+        rbm[m] = sum;
+        consolByMonth[m] = (consolByMonth[m] || 0) + sum;
+      });
+
+      newValues[ch] = {
+        planned: target.values?.[ch]?.planned || 0,
+        realized: Object.values(rbm).reduce((a, b) => a + b, 0),
+        realizedByMonth: rbm,
+      };
+    });
+
+    newValues.consolidado = {
+      planned: target.values?.consolidado?.planned || 0,
+      realized: Object.values(consolByMonth).reduce((a, b) => a + b, 0),
+      realizedByMonth: consolByMonth,
+    };
+
+    byRow.set(targetRow, { ...target, values: newValues });
+  });
+
+  return accounts.map((a) => (a.row !== undefined && byRow.has(a.row) ? byRow.get(a.row)! : a));
+}
+
 export const MONTHS_FULL = [
   { id: "01", label: "Janeiro 2026", short: "JAN" },
   { id: "02", label: "Fevereiro 2026", short: "FEV" },
@@ -76,10 +209,12 @@ export function DREGerencialManager() {
   const [savedSuccess, setSavedSuccess] = useState<string | null>(null);
 
   // Visible Months Filter
+  // Começa mostrando os 12 meses (em vez de só o trimestre atual) — enquanto os imports ainda
+  // estão sendo validados, esconder meses por padrão só confunde quem está conferindo se os
+  // dados caíram no mês certo.
   const [visibleMonths, setVisibleMonths] = useState<Record<string, boolean>>(() => {
-    const quarter = new Set(getCurrentQuarterMonthIds());
     const m: Record<string, boolean> = { total: true };
-    MONTHS_FULL.forEach((mo) => (m[mo.id] = quarter.has(mo.id)));
+    MONTHS_FULL.forEach((mo) => (m[mo.id] = true));
     return m;
   });
 
@@ -142,11 +277,15 @@ export function DREGerencialManager() {
 
       // Realized is strictly 0 unless imported!
       // Planned is strictly 0 unless filled in Budget!
+      const sumByMonth = (o?: Record<string, number>) => Object.values(o || {}).reduce((a, b) => a + b, 0);
       const sanitized = baseData.map((item) => {
         const bg = budgetMap[item.id] || { tiendas: 0, produto: 0, franquias: 0, consolidado: 0 };
-        const realTiendas = hasImported ? (item.values?.tiendas?.realized || 0) : 0;
-        const realProduto = hasImported ? (item.values?.produto?.realized || 0) : 0;
-        const realFranquias = hasImported ? (item.values?.franquias?.realized || 0) : 0;
+        const rbmTiendas = hasImported ? (item.values?.tiendas?.realizedByMonth || {}) : {};
+        const rbmProduto = hasImported ? (item.values?.produto?.realizedByMonth || {}) : {};
+        const rbmFranquias = hasImported ? (item.values?.franquias?.realizedByMonth || {}) : {};
+        const realTiendas = sumByMonth(rbmTiendas);
+        const realProduto = sumByMonth(rbmProduto);
+        const realFranquias = sumByMonth(rbmFranquias);
         const realConsolidado = realTiendas + realProduto + realFranquias;
 
         return {
@@ -155,14 +294,17 @@ export function DREGerencialManager() {
             tiendas: {
               planned: bg.tiendas,
               realized: realTiendas,
+              realizedByMonth: rbmTiendas,
             },
             produto: {
               planned: bg.produto,
               realized: realProduto,
+              realizedByMonth: rbmProduto,
             },
             franquias: {
               planned: bg.franquias,
               realized: realFranquias,
+              realizedByMonth: rbmFranquias,
             },
             consolidado: {
               planned: bg.consolidado,
@@ -172,16 +314,17 @@ export function DREGerencialManager() {
         };
       });
 
-      setDreAccounts(sanitized);
+      setDreAccounts(computeIndicatorRows(sanitized));
     } catch (e) {
       console.warn("Usando DRE inicial limpa.");
     }
   }, []);
 
   const saveDRE = (data: DREAccountItem[], message = "DRE Gerencial atualizada com sucesso!") => {
-    setDreAccounts(data);
+    const withIndicators = computeIndicatorRows(data);
+    setDreAccounts(withIndicators);
     try {
-      localStorage.setItem(STORAGE_KEY_DRE, JSON.stringify(data));
+      localStorage.setItem(STORAGE_KEY_DRE, JSON.stringify(withIndicators));
       setSavedSuccess(message);
       setTimeout(() => setSavedSuccess(null), 4000);
     } catch (e) {
@@ -192,12 +335,15 @@ export function DREGerencialManager() {
   const handleReset = () => {
     if (confirm("Deseja restaurar e zerar todos os lançamentos da DRE?")) {
       localStorage.removeItem("toda_moda_dre_has_imported_v1");
+      // Também esquece o mapeamento Projeto -> Canal já confirmado, senão a próxima importação
+      // reconhece os mesmos projetos como "já conhecidos" e pula a tela de revisão.
+      localStorage.removeItem(STORAGE_KEY_PROJ_MAP);
       const clean = DRE_ACCOUNTS_DATA.map((item) => ({
         ...item,
         values: {
-          tiendas: { planned: 0, realized: 0 },
-          produto: { planned: 0, realized: 0 },
-          franquias: { planned: 0, realized: 0 },
+          tiendas: { planned: 0, realized: 0, realizedByMonth: {} },
+          produto: { planned: 0, realized: 0, realizedByMonth: {} },
+          franquias: { planned: 0, realized: 0, realizedByMonth: {} },
           consolidado: { planned: 0, realized: 0 },
         },
       }));
@@ -362,8 +508,25 @@ export function DREGerencialManager() {
     fileName: string,
     summary: ImportProjSummaryEntry[]
   ) => {
-    const channelTotalsByCode: Record<string, { tiendas: number; produto: number; franquias: number }> = {};
+    // Descobre a coluna de data pelo cabeçalho (linha 1 do arquivo) para poder separar o
+    // Realizado por mês. Se não achar nenhuma coluna de data reconhecível, cai no mês atual
+    // (e avisa no final) em vez de travar a importação.
+    const headerRow = data[1] || [];
+    const colData = findColIndexByHeader(headerRow, [
+      "previs", // "Previsão" / "Previsao" — coluna de data usada nos arquivos de Contas a Pagar/Pagas
+      "data de pagamento",
+      "data pagamento",
+      "data vencimento",
+      "data emiss",
+      "data",
+    ]);
+    const currentMonthFallback = String(new Date().getMonth() + 1).padStart(2, "0");
+
+    // code -> canal -> mês -> soma
+    const channelTotalsByCode: Record<string, Record<ImportChannel, Record<string, number>>> = {};
     let updatedCount = 0;
+    let missingDateCount = 0;
+    const monthsInFile = new Set<string>();
 
     for (let i = 2; i < data.length; i++) {
       const row = data[i];
@@ -379,46 +542,96 @@ export function DREGerencialManager() {
       const proj = rawProj.toUpperCase() || "(SEM PROJETO)";
       const channel = mapping[proj] || suggestChannel(proj);
 
-      if (!channelTotalsByCode[code]) {
-        channelTotalsByCode[code] = { tiendas: 0, produto: 0, franquias: 0 };
+      let monthId = colData >= 0 ? parseMonthId(row[colData]) : null;
+      if (!monthId) {
+        missingDateCount++;
+        monthId = currentMonthFallback;
       }
-      channelTotalsByCode[code][channel] += amount;
+      monthsInFile.add(monthId);
+
+      if (!channelTotalsByCode[code]) {
+        channelTotalsByCode[code] = { tiendas: {}, produto: {}, franquias: {} };
+      }
+      channelTotalsByCode[code][channel][monthId] = (channelTotalsByCode[code][channel][monthId] || 0) + amount;
       updatedCount++;
     }
 
-    const updatedAccounts = dreAccounts.map(account => {
-      let addTiendas = 0;
-      let addProduto = 0;
-      let addFranquias = 0;
+    // Se algum dos meses presentes neste arquivo já tem Realizado importado antes, avisa antes
+    // de sobrescrever (só os meses em conflito são afetados — os demais meses ficam intactos).
+    const monthLabel = (id: string) => MONTHS_FULL.find((m) => m.id === id)?.label || id;
+    const monthsToOverwrite = Array.from(monthsInFile).filter((id) =>
+      dreAccounts.some(
+        (a) =>
+          (a.values?.tiendas?.realizedByMonth?.[id] || 0) !== 0 ||
+          (a.values?.produto?.realizedByMonth?.[id] || 0) !== 0 ||
+          (a.values?.franquias?.realizedByMonth?.[id] || 0) !== 0
+      )
+    );
+    if (monthsToOverwrite.length > 0) {
+      const names = monthsToOverwrite.sort().map(monthLabel).join(", ");
+      const proceed = confirm(
+        `Os meses ${names} já têm Realizado importado anteriormente. Reimportar vai SUBSTITUIR os valores desses meses (os demais meses não são afetados). Deseja continuar?`
+      );
+      if (!proceed) {
+        setPendingImport(null);
+        return;
+      }
+    }
 
-      Object.entries(channelTotalsByCode).forEach(([code, vals]) => {
+    const sumByMonth = (o: Record<string, number>) => Object.values(o).reduce((a, b) => a + b, 0);
+
+    // Só contas de Receita (Vendas / Franquias) ficam positivas; todo o resto (impostos, CMV,
+    // despesas) entra negativo — igual ao modelo original em Excel, onde cada linha já carrega o
+    // sinal certo e os totalizadores só somam. Sem isso, uma despesa aparecia "positiva" em toda
+    // linha e só a soma final (PBT) mostrava sinal de menos.
+    const isRevenueCategory = (category?: string) => !!category && category.startsWith("Receita");
+
+    const updatedAccounts = dreAccounts.map((account) => {
+      // meses tocados por este arquivo, para esta conta, por canal
+      const monthsAdd: Record<string, { tiendas: number; produto: number; franquias: number }> = {};
+      const sign = isRevenueCategory(account.category) ? 1 : -1;
+
+      Object.entries(channelTotalsByCode).forEach(([code, chans]) => {
         if (code === account.code || code.startsWith(account.code + ".")) {
-          addTiendas += vals.tiendas;
-          addProduto += vals.produto;
-          addFranquias += vals.franquias;
+          (Object.keys(chans) as ImportChannel[]).forEach((ch) => {
+            Object.entries(chans[ch]).forEach(([monthId, val]) => {
+              if (!monthsAdd[monthId]) monthsAdd[monthId] = { tiendas: 0, produto: 0, franquias: 0 };
+              monthsAdd[monthId][ch] += sign * val;
+            });
+          });
         }
       });
 
-      if (addTiendas > 0 || addProduto > 0 || addFranquias > 0) {
-        const currentTiendas = account.values?.tiendas || { planned: 0, realized: 0 };
-        const currentProduto = account.values?.produto || { planned: 0, realized: 0 };
-        const currentFranquias = account.values?.franquias || { planned: 0, realized: 0 };
-        const currentConsolidado = account.values?.consolidado || { planned: 0, realized: 0 };
+      if (Object.keys(monthsAdd).length === 0) return account;
 
-        const newTiendas = { planned: currentTiendas.planned, realized: addTiendas };
-        const newProduto = { planned: currentProduto.planned, realized: addProduto };
-        const newFranquias = { planned: currentFranquias.planned, realized: addFranquias };
-        const newConsolidado = {
-          planned: currentConsolidado.planned,
-          realized: newTiendas.realized + newProduto.realized + newFranquias.realized,
-        };
+      const currentTiendas = account.values?.tiendas || { planned: 0, realized: 0 };
+      const currentProduto = account.values?.produto || { planned: 0, realized: 0 };
+      const currentFranquias = account.values?.franquias || { planned: 0, realized: 0 };
+      const currentConsolidado = account.values?.consolidado || { planned: 0, realized: 0 };
 
-        return {
-          ...account,
-          values: { tiendas: newTiendas, produto: newProduto, franquias: newFranquias, consolidado: newConsolidado },
-        };
-      }
-      return account;
+      // Parte de meses já existentes (não tocados por este arquivo) + sobrescreve só os meses novos.
+      const rbmTiendas = { ...(currentTiendas.realizedByMonth || {}) };
+      const rbmProduto = { ...(currentProduto.realizedByMonth || {}) };
+      const rbmFranquias = { ...(currentFranquias.realizedByMonth || {}) };
+
+      Object.entries(monthsAdd).forEach(([monthId, vals]) => {
+        rbmTiendas[monthId] = vals.tiendas;
+        rbmProduto[monthId] = vals.produto;
+        rbmFranquias[monthId] = vals.franquias;
+      });
+
+      const newTiendas = { planned: currentTiendas.planned, realized: sumByMonth(rbmTiendas), realizedByMonth: rbmTiendas };
+      const newProduto = { planned: currentProduto.planned, realized: sumByMonth(rbmProduto), realizedByMonth: rbmProduto };
+      const newFranquias = { planned: currentFranquias.planned, realized: sumByMonth(rbmFranquias), realizedByMonth: rbmFranquias };
+      const newConsolidado = {
+        planned: currentConsolidado.planned,
+        realized: newTiendas.realized + newProduto.realized + newFranquias.realized,
+      };
+
+      return {
+        ...account,
+        values: { tiendas: newTiendas, produto: newProduto, franquias: newFranquias, consolidado: newConsolidado },
+      };
     });
 
     // Guarda o mapeamento confirmado para as próximas importações não perguntarem de novo pelos mesmos projetos.
@@ -433,12 +646,45 @@ export function DREGerencialManager() {
       { tiendas: 0, produto: 0, franquias: 0 } as Record<ImportChannel, number>
     );
 
+    // Diagnóstico: quanto do arquivo tem código de conta que não existe no plano de contas
+    // (isso é o mais provável de explicar o total do import não bater com o total da DRE —
+    // esse valor entra no "Valor Total" da tela de revisão, mas nunca cai em nenhuma linha aqui).
+    let unmatchedTotal = 0;
+    let unmatchedCount = 0;
+    const unmatchedCodesSample = new Set<string>();
+    Object.entries(channelTotalsByCode).forEach(([code, chans]) => {
+      const hasAccount = dreAccounts.some((a) => a.code && (code === a.code || code.startsWith(a.code + ".")));
+      if (!hasAccount) {
+        (Object.keys(chans) as ImportChannel[]).forEach((ch) => {
+          Object.values(chans[ch]).forEach((v) => {
+            unmatchedTotal += v;
+            unmatchedCount++;
+          });
+        });
+        unmatchedCodesSample.add(code);
+      }
+    });
+
+    const monthsLabel = Array.from(monthsInFile).sort().map(monthLabel).join(", ");
     localStorage.setItem("toda_moda_dre_has_imported_v1", "true");
     saveDRE(
       updatedAccounts,
-      `Arquivo "${fileName}" importado: ${updatedCount} lançamentos (Tiendas ${formatCurrency(totals.tiendas)}, Produto ${formatCurrency(totals.produto)}, Franquias ${formatCurrency(totals.franquias)}).`
+      `Arquivo "${fileName}" importado em ${monthsLabel}: ${updatedCount} lançamentos (Tiendas ${formatCurrency(totals.tiendas)}, Produto ${formatCurrency(totals.produto)}, Franquias ${formatCurrency(totals.franquias)}).`
     );
     setPendingImport(null);
+
+    if (unmatchedTotal > 0) {
+      const sample = Array.from(unmatchedCodesSample).slice(0, 8).join(", ");
+      alert(
+        `Aviso: ${formatCurrency(unmatchedTotal)} (${unmatchedCount} lançamento(s)) tinham código de conta que não existe no plano de contas da DRE — por isso não aparecem em nenhuma linha, mesmo contando no Valor Total da revisão. Códigos sem conta correspondente: ${sample}${unmatchedCodesSample.size > 8 ? "..." : ""}.`
+      );
+    }
+
+    if (missingDateCount > 0) {
+      alert(
+        `Aviso: ${missingDateCount} lançamento(s) não tinham uma data reconhecível e foram colocados em ${monthLabel(currentMonthFallback)} (mês atual). Confira a coluna de data do arquivo se isso não for esperado.`
+      );
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -524,8 +770,11 @@ export function DREGerencialManager() {
       const f = a.values?.franquias || { planned: 0, realized: 0 };
 
       csv += `${a.level},"${a.code}","${a.name}","${a.category}"`;
-      activeMonthsList.forEach(() => {
-        csv += `,${(t.realized / 12).toFixed(2)},${(p.realized / 12).toFixed(2)},${(f.realized / 12).toFixed(2)},${(c.realized / 12).toFixed(2)}`;
+      activeMonthsList.forEach((m) => {
+        const tr = t.realizedByMonth?.[m.id] || 0;
+        const pr = p.realizedByMonth?.[m.id] || 0;
+        const fr = f.realizedByMonth?.[m.id] || 0;
+        csv += `,${tr.toFixed(2)},${pr.toFixed(2)},${fr.toFixed(2)},${(tr + pr + fr).toFixed(2)}`;
       });
       csv += `,${c.realized.toFixed(2)}\n`;
     });
@@ -796,19 +1045,12 @@ export function DREGerencialManager() {
                     const f = item.values?.franquias || { planned: 0, realized: 0 };
                     const c = item.values?.consolidado || { planned: 0, realized: 0 };
 
-                    // Monthly proportional distribution
+                    // Orçado ainda não é quebrado por mês (Budget é um módulo à parte), então
+                    // continua distribuído proporcionalmente. Realizado usa o valor de fato daquele
+                    // mês, vindo da importação — não é mais uma divisão do total anual.
                     const t_m_plan = t.planned / 12;
-                    const t_m_real = t.realized / 12;
-
                     const p_m_plan = p.planned / 12;
-                    const p_m_real = p.realized / 12;
-
                     const f_m_plan = f.planned / 12;
-                    const f_m_real = f.realized / 12;
-
-                    const c_m_plan = c.planned / 12;
-                    const c_m_real = c.realized / 12;
-                    const c_m_diff = c_m_real - c_m_plan;
 
                     const c_total_diff = c.realized - c.planned;
 
@@ -863,7 +1105,11 @@ export function DREGerencialManager() {
                         </td>
 
                         {/* Month Cells across Channels */}
-                        {activeMonthsList.map((m) => (
+                        {activeMonthsList.map((m) => {
+                          const t_m_real = t.realizedByMonth?.[m.id] || 0;
+                          const p_m_real = p.realizedByMonth?.[m.id] || 0;
+                          const f_m_real = f.realizedByMonth?.[m.id] || 0;
+                          return (
                           <React.Fragment key={m.id}>
                             {/* Tiendas */}
                             {visibleChannels.tiendas && (
@@ -913,38 +1159,39 @@ export function DREGerencialManager() {
                               </>
                             )}
                           </React.Fragment>
-                        ))}
+                          );
+                        })}
 
                         {/* Total Anual Cells */}
                         {visibleMonths.total && (
                           <React.Fragment key="total-row-cells">
                             {visibleChannels.tiendas && (
                               <>
-                                {showPlanned && <td className="w-[80px] min-w-[80px] max-w-[80px] py-2 px-1 text-right font-mono text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 whitespace-nowrap">{t.planned !== 0 ? formatCurrency(t.planned) : "-"}</td>}
-                                {showRealized && <td className="w-[80px] min-w-[80px] max-w-[80px] py-2 px-1 text-right font-mono font-bold text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 border-r border-zinc-200 dark:border-zinc-800 whitespace-nowrap">{t.realized !== 0 ? formatCurrency(t.realized) : "-"}</td>}
+                                {showPlanned && <td className="min-w-[80px] py-2 px-1 text-right font-mono text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 whitespace-nowrap">{t.planned !== 0 ? formatCurrency(t.planned) : "-"}</td>}
+                                {showRealized && <td className="min-w-[80px] py-2 px-1 text-right font-mono font-bold text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 border-r border-zinc-200 dark:border-zinc-800 whitespace-nowrap">{t.realized !== 0 ? formatCurrency(t.realized) : "-"}</td>}
                               </>
                             )}
 
                             {visibleChannels.produto && (
                               <>
-                                {showPlanned && <td className="w-[80px] min-w-[80px] max-w-[80px] py-2 px-1 text-right font-mono text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 whitespace-nowrap">{p.planned !== 0 ? formatCurrency(p.planned) : "-"}</td>}
-                                {showRealized && <td className="w-[80px] min-w-[80px] max-w-[80px] py-2 px-1 text-right font-mono font-bold text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 border-r border-zinc-200 dark:border-zinc-800 whitespace-nowrap">{p.realized !== 0 ? formatCurrency(p.realized) : "-"}</td>}
+                                {showPlanned && <td className="min-w-[80px] py-2 px-1 text-right font-mono text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 whitespace-nowrap">{p.planned !== 0 ? formatCurrency(p.planned) : "-"}</td>}
+                                {showRealized && <td className="min-w-[80px] py-2 px-1 text-right font-mono font-bold text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 border-r border-zinc-200 dark:border-zinc-800 whitespace-nowrap">{p.realized !== 0 ? formatCurrency(p.realized) : "-"}</td>}
                               </>
                             )}
 
                             {visibleChannels.franquias && (
                               <>
-                                {showPlanned && <td className="w-[80px] min-w-[80px] max-w-[80px] py-2 px-1 text-right font-mono text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 whitespace-nowrap">{f.planned !== 0 ? formatCurrency(f.planned) : "-"}</td>}
-                                {showRealized && <td className="w-[80px] min-w-[80px] max-w-[80px] py-2 px-1 text-right font-mono font-bold text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 border-r border-zinc-200 dark:border-zinc-800 whitespace-nowrap">{f.realized !== 0 ? formatCurrency(f.realized) : "-"}</td>}
+                                {showPlanned && <td className="min-w-[80px] py-2 px-1 text-right font-mono text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 whitespace-nowrap">{f.planned !== 0 ? formatCurrency(f.planned) : "-"}</td>}
+                                {showRealized && <td className="min-w-[80px] py-2 px-1 text-right font-mono font-bold text-[10px] bg-zinc-200/30 dark:bg-zinc-800/30 border-r border-zinc-200 dark:border-zinc-800 whitespace-nowrap">{f.realized !== 0 ? formatCurrency(f.realized) : "-"}</td>}
                               </>
                             )}
 
                             {visibleChannels.consolidado && (
                               <>
-                                {showPlanned && <td className="w-[86px] min-w-[86px] max-w-[86px] py-2 px-1 text-right font-mono text-[11px] bg-zinc-300/40 dark:bg-zinc-700/40 font-bold whitespace-nowrap">{c.planned !== 0 ? formatCurrency(c.planned) : "-"}</td>}
-                                {showRealized && <td className="w-[86px] min-w-[86px] max-w-[86px] py-2 px-1 text-right font-mono text-[11px] bg-zinc-300/40 dark:bg-zinc-700/40 font-black text-foreground whitespace-nowrap">{c.realized !== 0 ? formatCurrency(c.realized) : "-"}</td>}
+                                {showPlanned && <td className="min-w-[86px] py-2 px-1 text-right font-mono text-[11px] bg-zinc-300/40 dark:bg-zinc-700/40 font-bold whitespace-nowrap">{c.planned !== 0 ? formatCurrency(c.planned) : "-"}</td>}
+                                {showRealized && <td className="min-w-[86px] py-2 px-1 text-right font-mono text-[11px] bg-zinc-300/40 dark:bg-zinc-700/40 font-black text-foreground whitespace-nowrap">{c.realized !== 0 ? formatCurrency(c.realized) : "-"}</td>}
                                 {showVariance && (
-                                  <td className="w-[80px] min-w-[80px] max-w-[80px] py-2 px-1 text-right font-mono text-[11px] bg-zinc-300/40 dark:bg-zinc-700/40 font-bold whitespace-nowrap">
+                                  <td className="min-w-[80px] py-2 px-1 text-right font-mono text-[11px] bg-zinc-300/40 dark:bg-zinc-700/40 font-bold whitespace-nowrap">
                                     {c_total_diff !== 0 ? (
                                       <span className={c_total_diff > 0 ? "text-emerald-600 dark:text-emerald-400 font-black" : "text-rose-600 dark:text-rose-400 font-black"}>
                                         {c_total_diff > 0 ? `+${formatCurrency(c_total_diff)}` : formatCurrency(c_total_diff)}
