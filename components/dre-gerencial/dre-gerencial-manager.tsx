@@ -104,7 +104,9 @@ function parseMonthId(value: any): string | null {
 // `isRevenueCategory` em finalizeImport), todo mundo aqui é somado (sign: 1), igual ao Excel
 // original: cada linha de origem já carrega o sinal certo, o totalizador só soma.
 const ROLLUP_BY_ROW: Record<number, { row: number; sign: 1 | -1 }[]> = {
+  12: [{ row: 4, sign: 1 }, { row: 8, sign: 1 }], // Ventas Netas = Ventas c IVA + IVA (IVA já vem negativo) — no Excel original nunca recebia lançamento próprio
   20: [{ row: 12, sign: 1 }, { row: 16, sign: 1 }], // CMg Operativo = Ventas Netas + CMV (CMV já vem negativo)
+  30: [{ row: 22, sign: 1 }, { row: 26, sign: 1 }], // Ingresso Neto Franquicias = Ingresso Bruto + IVA Franquicias (mesmo caso da linha 12)
   34: [{ row: 30, sign: 1 }], // CMg Franquicias = Ingresso Neto Franquicias
   36: [{ row: 20, sign: 1 }, { row: 34, sign: 1 }], // CMg Total
   192: [
@@ -526,6 +528,8 @@ export function DREGerencialManager() {
     const channelTotalsByCode: Record<string, Record<ImportChannel, Record<string, number>>> = {};
     let updatedCount = 0;
     let missingDateCount = 0;
+    let noCodeTotal = 0;
+    let noCodeCount = 0;
     const monthsInFile = new Set<string>();
 
     for (let i = 2; i < data.length; i++) {
@@ -534,9 +538,15 @@ export function DREGerencialManager() {
       const amount = Math.abs(Number(row[4])) || 0;
       if (!cat || amount === 0) continue;
 
-      const match = cat.match(/^([0-9.]+)/);
-      const code = match ? match[1] : "";
-      if (!code) continue;
+      // A maioria dos códigos é numérica ("24.1.2"), mas alguns (ex: "E. E." de Efectos
+      // Especiales) não são — nesses casos, usa o trecho antes do primeiro " - " como código.
+      const numericMatch = cat.match(/^([0-9.]+)/);
+      const code = numericMatch ? numericMatch[1] : cat.split(" - ")[0].trim();
+      if (!code) {
+        noCodeTotal += amount;
+        noCodeCount++;
+        continue;
+      }
 
       const rawProj = String(row[7] || row[8] || "").trim();
       const proj = rawProj.toUpperCase() || "(SEM PROJETO)";
@@ -586,6 +596,15 @@ export function DREGerencialManager() {
     // linha e só a soma final (PBT) mostrava sinal de menos.
     const isRevenueCategory = (category?: string) => !!category && category.startsWith("Receita");
 
+    // Diagnóstico: quanto do arquivo caiu em conta de Receita (fica positivo) vs conta de
+    // custo/despesa (fica negativo) — se aparecer valor de Receita num arquivo de Contas a Pagar,
+    // isso "cancela" parte do total negativo em vez de somar, e explica um EBITDA menos negativo
+    // do que o Valor Total do import.
+    let revenueTaggedTotal = 0;
+    let revenueTaggedCount = 0;
+    let grandMatchedTotal = 0;
+    const revenueTaggedAccounts = new Set<string>();
+
     const updatedAccounts = dreAccounts.map((account) => {
       // meses tocados por este arquivo, para esta conta, por canal
       const monthsAdd: Record<string, { tiendas: number; produto: number; franquias: number }> = {};
@@ -597,6 +616,12 @@ export function DREGerencialManager() {
             Object.entries(chans[ch]).forEach(([monthId, val]) => {
               if (!monthsAdd[monthId]) monthsAdd[monthId] = { tiendas: 0, produto: 0, franquias: 0 };
               monthsAdd[monthId][ch] += sign * val;
+              grandMatchedTotal += val;
+              if (sign === 1) {
+                revenueTaggedTotal += val;
+                revenueTaggedCount++;
+                revenueTaggedAccounts.add(`${account.code} - ${account.name}`);
+              }
             });
           });
         }
@@ -673,10 +698,28 @@ export function DREGerencialManager() {
     );
     setPendingImport(null);
 
-    if (unmatchedTotal > 0) {
+    console.log("[DRE import] resumo:", {
+      valorTotalArquivo: formatCurrency(grandMatchedTotal + unmatchedTotal + noCodeTotal),
+      caiuEmAlgumaConta: formatCurrency(grandMatchedTotal),
+      semContaCorrespondente: formatCurrency(unmatchedTotal),
+      semCodigoReconhecivel: formatCurrency(noCodeTotal),
+      caiuEmContaDeReceita: formatCurrency(revenueTaggedTotal),
+      contasDeReceitaAtingidas: Array.from(revenueTaggedAccounts),
+    });
+
+    if (unmatchedTotal > 0 || noCodeTotal > 0) {
       const sample = Array.from(unmatchedCodesSample).slice(0, 8).join(", ");
+      const parts: string[] = [];
+      if (unmatchedTotal > 0) {
+        parts.push(
+          `${formatCurrency(unmatchedTotal)} (${unmatchedCount} lançamento(s)) com código de conta que não existe no plano de contas. Códigos: ${sample}${unmatchedCodesSample.size > 8 ? "..." : ""}`
+        );
+      }
+      if (noCodeTotal > 0) {
+        parts.push(`${formatCurrency(noCodeTotal)} (${noCodeCount} lançamento(s)) sem nenhum código reconhecível na coluna de conta`);
+      }
       alert(
-        `Aviso: ${formatCurrency(unmatchedTotal)} (${unmatchedCount} lançamento(s)) tinham código de conta que não existe no plano de contas da DRE — por isso não aparecem em nenhuma linha, mesmo contando no Valor Total da revisão. Códigos sem conta correspondente: ${sample}${unmatchedCodesSample.size > 8 ? "..." : ""}.`
+        `Aviso: parte do arquivo não entrou na DRE, mesmo contando no Valor Total da revisão — ${parts.join("; ")}.`
       );
     }
 
@@ -684,6 +727,18 @@ export function DREGerencialManager() {
       alert(
         `Aviso: ${missingDateCount} lançamento(s) não tinham uma data reconhecível e foram colocados em ${monthLabel(currentMonthFallback)} (mês atual). Confira a coluna de data do arquivo se isso não for esperado.`
       );
+    }
+
+    // Diagnóstico de sinal: mostra sempre que houver algo em conta de Receita, pra você conferir
+    // se bate com o Valor Total da tela de revisão. grandMatchedTotal = tudo que caiu em alguma
+    // conta, em valor absoluto (deveria bater com o Valor Total, já que unmatched/noCode deram 0).
+    if (revenueTaggedTotal > 0) {
+      const accSample = Array.from(revenueTaggedAccounts).slice(0, 6).join(", ");
+      alert(
+        `Diagnóstico de sinal: ${formatCurrency(grandMatchedTotal)} do arquivo caiu em alguma conta da DRE (bate com o Valor Total da revisão). Desses, ${formatCurrency(revenueTaggedTotal)} (${revenueTaggedCount} lançamento(s)) caíram em conta de RECEITA — ficam positivos, então "cancelam" parte do total negativo. Contas de receita atingidas: ${accSample}. Se isso não fizer sentido para um arquivo de Contas a Pagar, provavelmente é lançamento com código de conta errado no Omie.`
+      );
+    } else {
+      console.log(`[DRE import] Total casado: ${formatCurrency(grandMatchedTotal)}. Nenhum lançamento caiu em conta de Receita.`);
     }
   };
 
@@ -1192,7 +1247,13 @@ export function DREGerencialManager() {
                                 {showRealized && <td className="min-w-[86px] py-2 px-1 text-right font-mono text-[11px] bg-zinc-300/40 dark:bg-zinc-700/40 font-black text-foreground whitespace-nowrap">{c.realized !== 0 ? formatCurrency(c.realized) : "-"}</td>}
                                 {showVariance && (
                                   <td className="min-w-[80px] py-2 px-1 text-right font-mono text-[11px] bg-zinc-300/40 dark:bg-zinc-700/40 font-bold whitespace-nowrap">
-                                    {c_total_diff !== 0 ? (
+                                    {c.planned === 0 ? (
+                                      // Sem orçado ainda, o desvio seria sempre igual ao realizado —
+                                      // mostrar isso só duplicava o número ao lado, sem informar nada novo.
+                                      <span className="text-zinc-400" title="Sem orçado cadastrado ainda">
+                                        s/ orçado
+                                      </span>
+                                    ) : c_total_diff !== 0 ? (
                                       <span className={c_total_diff > 0 ? "text-emerald-600 dark:text-emerald-400 font-black" : "text-rose-600 dark:text-rose-400 font-black"}>
                                         {c_total_diff > 0 ? `+${formatCurrency(c_total_diff)}` : formatCurrency(c_total_diff)}
                                       </span>
