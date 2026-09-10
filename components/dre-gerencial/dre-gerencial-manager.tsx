@@ -72,6 +72,89 @@ function findColIndexByHeader(headerRow: any[] | undefined, keywords: string[]):
   return -1;
 }
 
+export interface ImportLayout {
+  data: any[][];
+  dataStartIdx: number; // primeira linha de dado de verdade dentro de `data`
+  colCategoria: number;
+  colProj: number;
+  colValor: number;
+  colData: number;
+  // "receipts" = arquivo de Recebimentos (coluna "Recebido" própria, sempre entrada de caixa).
+  // "payables" = Contas a Pagar/Pagas (coluna combinada "A Pagar ou Receber"/"Pago ou Recebido").
+  format: "receipts" | "payables";
+}
+
+// Acha, dentro de uma aba já lida, a linha de cabeçalho (a que tem "Categoria" em alguma coluna,
+// procurando só nas primeiras linhas). -1 se essa aba não tiver essa coluna.
+function findHeaderRowIdx(rows: any[][]): number {
+  for (let i = 0; i < Math.min(5, rows.length); i++) {
+    const row = rows[i] || [];
+    if (row.some((c: any) => String(c ?? "").toLowerCase().includes("categoria"))) return i;
+  }
+  return -1;
+}
+
+// Reconhece automaticamente o layout do arquivo (Contas a Pagar/Pagas OU Recebimentos, que têm
+// cabeçalho e colunas em posições bem diferentes uma da outra) a partir do texto dos cabeçalhos,
+// em vez de assumir índices fixos — funciona pros dois formatos sem precisar de branch separado
+// por nome de arquivo. Testa cada aba do arquivo à procura de uma com coluna "Categoria" (arquivos
+// de Recebimentos vêm com uma aba "Resumo" extra, tipo tabela dinâmica, na frente da aba de dados
+// de verdade — não dá pra confiar em "aba com mais linhas" pra escolher, porque uma tabela
+// dinâmica pode fazer a aba de resumo parecer maior do que é). Retorna null se nenhuma aba tiver.
+export function resolveImportLayout(wb: any): ImportLayout | null {
+  let bestData: any[][] | null = null;
+  let headerIdx = -1;
+  for (const name of wb.SheetNames) {
+    const raw: any[][] = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1 });
+    const idx = findHeaderRowIdx(raw);
+    if (idx !== -1) {
+      bestData = raw;
+      headerIdx = idx;
+      break;
+    }
+  }
+  if (!bestData || headerIdx === -1) return null;
+
+  const headerRow = bestData[headerIdx];
+  const colCategoria = findColIndexByHeader(headerRow, ["categoria"]);
+  const colProj = findColIndexByHeader(headerRow, ["projeto"]);
+
+  const isCombinedPagavel = findColIndexByHeader(headerRow, ["pago ou recebido", "a pagar ou receber"]) !== -1;
+  let colValor: number;
+  let format: ImportLayout["format"];
+  if (isCombinedPagavel) {
+    colValor = findColIndexByHeader(headerRow, ["pago ou recebido", "a pagar ou receber"]);
+    format = "payables";
+  } else {
+    colValor = findColIndexByHeader(headerRow, ["recebido", "valor da conta", "valor"]);
+    format = "receipts";
+  }
+  if (colCategoria === -1 || colValor === -1) return null;
+
+  // Recebimentos: a data que importa é a que apareceu de fato no extrato bancário, não a
+  // previsão — só cai pra "previs"/outras se essa coluna não existir. Contas a Pagar/Pagas
+  // continua priorizando "Previsão", como já validado.
+  const colData =
+    format === "receipts"
+      ? findColIndexByHeader(headerRow, [
+          "data de crédito ou débito",
+          "data de credito ou debito",
+          "previs",
+          "data emiss",
+          "data",
+        ])
+      : findColIndexByHeader(headerRow, [
+          "previs",
+          "data de pagamento",
+          "data pagamento",
+          "data vencimento",
+          "data emiss",
+          "data",
+        ]);
+
+  return { data: bestData, dataStartIdx: headerIdx + 1, colCategoria, colProj, colValor, colData, format };
+}
+
 // Converte o valor de uma célula de data (serial do Excel, Date, ou texto dd/mm/aaaa) no id do
 // mês ("01".."12"). Retorna null se não conseguir reconhecer o formato.
 function parseMonthId(value: any): string | null {
@@ -253,7 +336,7 @@ export function DREGerencialManager() {
 
   const [pendingImport, setPendingImport] = useState<{
     fileName: string;
-    data: any[][];
+    layout: ImportLayout;
     summary: ImportProjSummaryEntry[];
   } | null>(null);
 
@@ -520,26 +603,18 @@ export function DREGerencialManager() {
   // Aplica o mapeamento projeto -> canal já confirmado (persistido ou recém-revisado) sobre os
   // dados já lidos do arquivo, faz o rollup por código de conta (igual ao fluxo anterior) e salva.
   const finalizeImport = async (
-    data: any[][],
+    layout: ImportLayout,
     mapping: Record<string, ImportChannel>,
     fileName: string,
     summary: ImportProjSummaryEntry[]
   ) => {
     toast.clear();
-
-    // Descobre a coluna de data pelo cabeçalho (linha 1 do arquivo) para poder separar o
-    // Realizado por mês. Se não achar nenhuma coluna de data reconhecível, cai no mês atual
-    // (e avisa no final) em vez de travar a importação.
-    const headerRow = data[1] || [];
-    const colData = findColIndexByHeader(headerRow, [
-      "previs", // "Previsão" / "Previsao" — coluna de data usada nos arquivos de Contas a Pagar/Pagas
-      "data de pagamento",
-      "data pagamento",
-      "data vencimento",
-      "data emiss",
-      "data",
-    ]);
+    const { data, colCategoria, colValor, colProj, colData, dataStartIdx, format } = layout;
     const currentMonthFallback = String(new Date().getMonth() + 1).padStart(2, "0");
+    // Arquivo de Recebimentos: todo lançamento é dinheiro entrando, e sem Projeto preenchido cai
+    // em Venda de Producto (é o caso real — Royalties/Fundo de Promoção recebidos de franquias,
+    // lançados no projeto de Producto), em vez do "tiendas" que é o padrão genérico da DRE.
+    const defaultChannelForFile: ImportChannel = format === "receipts" ? "produto" : "tiendas";
 
     // code -> canal -> mês -> soma
     const channelTotalsByCode: Record<string, Record<ImportChannel, Record<string, number>>> = {};
@@ -549,10 +624,10 @@ export function DREGerencialManager() {
     let noCodeCount = 0;
     const monthsInFile = new Set<string>();
 
-    for (let i = 2; i < data.length; i++) {
+    for (let i = dataStartIdx; i < data.length; i++) {
       const row = data[i];
-      const cat = String(row[6] || "").trim();
-      const amount = Math.abs(Number(row[4])) || 0;
+      const cat = String(row[colCategoria] || "").trim();
+      const amount = Math.abs(Number(row[colValor])) || 0;
       if (!cat || amount === 0) continue;
 
       // A maioria dos códigos é numérica ("24.1.2"), mas alguns (ex: "E. E." de Efectos
@@ -565,9 +640,12 @@ export function DREGerencialManager() {
         continue;
       }
 
-      const rawProj = String(row[7] || row[8] || "").trim();
-      const proj = rawProj.toUpperCase() || "(SEM PROJETO)";
-      const channel = mapping[proj] || suggestChannel(proj);
+      const rawProj = colProj >= 0 ? String(row[colProj] || "").trim() : "";
+      const rawProjUpper = rawProj.toUpperCase();
+      // "N/D" é o placeholder do Omie pra campo vazio — conta como sem Projeto, igual string vazia.
+      const hasProj = rawProjUpper !== "" && rawProjUpper !== "N/D";
+      const proj = hasProj ? rawProjUpper : "(SEM PROJETO)";
+      const channel = mapping[proj] || (hasProj ? suggestChannel(proj) : defaultChannelForFile);
 
       let monthId = colData >= 0 ? parseMonthId(row[colData]) : null;
       if (!monthId) {
@@ -626,7 +704,10 @@ export function DREGerencialManager() {
     const updatedAccounts = dreAccounts.map((account) => {
       // meses tocados por este arquivo, para esta conta, por canal
       const monthsAdd: Record<string, { tiendas: number; produto: number; franquias: number }> = {};
-      const sign = isRevenueCategory(account.category) ? 1 : -1;
+      // Arquivo de Recebimentos = sempre entrada de caixa, mesmo em conta cadastrada como "Outros
+      // Não Operacionais" (Royalties/Fundo de Promoção não têm categoria "Receita..." no plano,
+      // mas são dinheiro recebido de verdade) — o tipo do arquivo manda mais que a categoria aqui.
+      const sign = format === "receipts" ? 1 : isRevenueCategory(account.category) ? 1 : -1;
 
       Object.entries(channelTotalsByCode).forEach(([code, chans]) => {
         if (code === account.code || code.startsWith(account.code + ".")) {
@@ -772,29 +853,34 @@ export function DREGerencialManager() {
       try {
         const bstr = evt.target?.result;
         const wb = XLSX.read(bstr, { type: "binary" });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const data: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+        const layout = resolveImportLayout(wb);
 
-        if (data.length < 3) {
+        if (!layout || layout.data.length < layout.dataStartIdx + 1) {
           toast.clear();
-          toast.warning("Arquivo sem registros suficientes", "Esse arquivo Excel não tem linhas de dados para importar.");
+          toast.warning(
+            "Não reconheci esse arquivo",
+            "Não encontrei uma coluna \"Categoria\" em nenhuma aba — confira se é um export de Contas a Pagar/Pagas ou Recebimentos do Omie."
+          );
           return;
         }
+        const { data, colCategoria, colValor, colProj, dataStartIdx, format } = layout;
+        const defaultChannelForFile: ImportChannel = format === "receipts" ? "produto" : "tiendas";
 
         // 1ª passada: só agrupa por "Projeto" para montar o resumo/revisão (o rollup por conta
         // acontece depois, em finalizeImport, já com o mapeamento confirmado).
         const projGroups: Record<string, { rawLabel: string; count: number; amount: number }> = {};
-        for (let i = 2; i < data.length; i++) {
+        for (let i = dataStartIdx; i < data.length; i++) {
           const row = data[i];
-          const cat = String(row[6] || "").trim();
-          const amount = Math.abs(Number(row[4])) || 0;
+          const cat = String(row[colCategoria] || "").trim();
+          const amount = Math.abs(Number(row[colValor])) || 0;
           if (!cat || amount === 0) continue;
 
-          const rawProj = String(row[7] || row[8] || "").trim();
-          const proj = rawProj.toUpperCase() || "(SEM PROJETO)";
+          const rawProj = colProj >= 0 ? String(row[colProj] || "").trim() : "";
+          const rawProjUpper = rawProj.toUpperCase();
+          const hasProj = rawProjUpper !== "" && rawProjUpper !== "N/D";
+          const proj = hasProj ? rawProjUpper : "(SEM PROJETO)";
           if (!projGroups[proj]) {
-            projGroups[proj] = { rawLabel: rawProj || "(sem projeto)", count: 0, amount: 0 };
+            projGroups[proj] = { rawLabel: hasProj ? rawProj : "(sem projeto)", count: 0, amount: 0 };
           }
           projGroups[proj].count += 1;
           projGroups[proj].amount += amount;
@@ -809,7 +895,7 @@ export function DREGerencialManager() {
             rawLabel: projGroups[proj].rawLabel,
             count: projGroups[proj].count,
             amount: projGroups[proj].amount,
-            channel: persistedMap[proj] || suggestChannel(proj),
+            channel: persistedMap[proj] || (proj === "(SEM PROJETO)" ? defaultChannelForFile : suggestChannel(proj)),
             isNew: !persistedMap[proj],
           }))
           .sort((a, b) => b.amount - a.amount);
@@ -819,9 +905,9 @@ export function DREGerencialManager() {
         if (!hasNew) {
           // Todos os projetos do arquivo já têm canal salvo de uma importação anterior: importa direto.
           const mapping = Object.fromEntries(summary.map((s) => [s.proj, s.channel])) as Record<string, ImportChannel>;
-          finalizeImport(data, mapping, file.name, summary);
+          finalizeImport(layout, mapping, file.name, summary);
         } else {
-          setPendingImport({ fileName: file.name, data, summary });
+          setPendingImport({ fileName: file.name, layout, summary });
         }
       } catch (err) {
         console.error("Erro ao importar arquivo Excel:", err);
@@ -1526,7 +1612,7 @@ export function DREGerencialManager() {
           fileName={pendingImport.fileName}
           summary={pendingImport.summary}
           onCancel={() => setPendingImport(null)}
-          onConfirm={(mapping) => finalizeImport(pendingImport.data, mapping, pendingImport.fileName, pendingImport.summary)}
+          onConfirm={(mapping) => finalizeImport(pendingImport.layout, mapping, pendingImport.fileName, pendingImport.summary)}
         />
       )}
     </div>

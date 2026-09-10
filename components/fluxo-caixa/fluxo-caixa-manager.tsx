@@ -24,6 +24,8 @@ import {
   SlidersHorizontal,
   ChevronDown,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   UploadCloud,
   Search,
   Building2,
@@ -32,7 +34,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/components/ui/toast-provider";
 import { useConfirm } from "@/components/ui/confirm-provider";
 import { ImportReviewModal, ImportChannel, ImportProjSummaryEntry } from "@/components/dre-gerencial/import-review-modal";
-import { loadProjChannelMap, saveProjChannelMap, suggestChannel } from "@/components/dre-gerencial/dre-gerencial-manager";
+import { loadProjChannelMap, saveProjChannelMap, suggestChannel, resolveImportLayout, ImportLayout } from "@/components/dre-gerencial/dre-gerencial-manager";
 import * as XLSX from "xlsx";
 
 const STORAGE_KEY_FLUXO = "toda_moda_fluxo_caixa_v1";
@@ -53,6 +55,12 @@ function emptyMonths(): MonthMap {
     m[mo.id] = { planned: 0, realized: 0 };
   });
   return m;
+}
+
+// Ponto flutuante do JS gera resto tipo 90703,59000000001 depois de várias somas — arredonda pra
+// centavo sempre que um valor monetário é calculado/gravado.
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
 export const CHANNEL_LABELS: Record<CashFlowChannel, string> = {
@@ -248,6 +256,13 @@ const BSG_CODE_TO_LEAF: Record<string, string> = {
 const BSG_CODE_OVERRIDES: Record<string, string> = {
   "30.1.3": "Banco", // Intereses Bancarios
 };
+// Recebimentos de Royalties/Fundo de Promoção vêm com código "33.1.x" (grupo "33.1" sozinho não
+// diferencia qual é qual, precisa do código completo) — arquivo de Recebimentos, sempre Receita.
+const NEWCO_CODE_OVERRIDES: Record<string, string> = {
+  "33.1.3": "Royalties",
+  "33.1.4": "Otros Ingresos",
+  "33.1.5": "Fondo de Promoción",
+};
 
 
 function excelSerialToYearMonth(serial: number): { year: number; month: number } | null {
@@ -299,7 +314,7 @@ export function FluxoCaixaManager() {
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [pendingImport, setPendingImport] = useState<{
     fileName: string;
-    data: any[][];
+    layout: ImportLayout;
     field: "planned" | "realized";
     fieldLabel: string;
     summary: ImportProjSummaryEntry[];
@@ -398,6 +413,18 @@ export function FluxoCaixaManager() {
     });
   };
 
+  const handleExpandAllSections = () => {
+    setCollapsedSections(new Set());
+  };
+
+  const handleCollapseAllSections = () => {
+    const allKeys = new Set<string>();
+    (Object.keys(ENTITY_SECTIONS) as CashFlowEntity[]).forEach((entity) => {
+      ENTITY_SECTIONS[entity].forEach((section) => allKeys.add(`${entity}::${section}`));
+    });
+    setCollapsedSections(allKeys);
+  };
+
   const activeMonthsList = useMemo(() => CASH_FLOW_MONTHS.filter((m) => visibleMonths[m.id]), [visibleMonths]);
 
   const visibleEntities: CashFlowEntity[] = entityView === "both" ? ENTITY_ORDER : [entityView];
@@ -493,13 +520,14 @@ export function FluxoCaixaManager() {
   // arquivo: acha o mês pela data, a entidade pelo Projeto, a linha do fluxo pelo código de conta,
   // e soma tudo por entidade/linha/mês.
   const finalizeFluxoImport = (
-    data: any[][],
+    layout: ImportLayout,
     field: "planned" | "realized",
     fieldLabel: string,
     mapping: Record<string, ImportChannel>,
     fileName: string,
     summary: ImportProjSummaryEntry[]
   ) => {
+    const { data, colCategoria, colValor, colProj, colData, dataStartIdx, format } = layout;
     type AggCell = { total: number; byChannel: Partial<Record<CashFlowChannel, number>> };
     const agg: Record<CashFlowEntity, Record<string, Partial<Record<CashFlowMonthId, AggCell>>>> = {
       newco: {},
@@ -515,19 +543,23 @@ export function FluxoCaixaManager() {
 
     // O Valor do arquivo vem sempre positivo (mesma situação que corrigimos na DRE) — o sinal
     // certo é decidido pelo tipo da linha de destino (Ingreso soma, Egreso/Investimento reduz),
-    // não pelo sinal bruto da planilha.
+    // não pelo sinal bruto da planilha. Num arquivo de Recebimentos, se cair em código sem mapa
+    // (não vira Royalties/Otros Ingresos/Fondo de Promoción), ainda assim é dinheiro entrando.
     const rowTypeByKey: Record<string, CashFlowRowType> = {};
     items.forEach((it) => {
       rowTypeByKey[`${it.entity}::${it.name}`] = it.rowType;
     });
+    // Projeto vazio em arquivo de Recebimentos cai em Venda de Producto (é o caso real: Royalties/
+    // Fundo de Promoção recebidos de franquias, lançados no projeto de Producto).
+    const defaultChannelForFile: ImportChannel = format === "receipts" ? "produto" : "tiendas";
 
-    for (let i = 2; i < data.length; i++) {
+    for (let i = dataStartIdx; i < data.length; i++) {
       const row = data[i];
-      const categoria = String(row?.[6] ?? "").trim();
-      const amount = Number(row?.[4]);
+      const categoria = String(row?.[colCategoria] ?? "").trim();
+      const amount = Number(row?.[colValor]);
       if (!categoria || !amount) continue; // pula linha de total/rodapé da planilha (sem Categoria)
 
-      const dateInfo = excelSerialToYearMonth(Number(row?.[0]));
+      const dateInfo = colData >= 0 ? excelSerialToYearMonth(Number(row?.[colData])) : null;
       if (!dateInfo || dateInfo.year !== 2026) {
         outOfYear++;
         outOfYearTotal += Math.abs(amount);
@@ -535,18 +567,22 @@ export function FluxoCaixaManager() {
       }
       const monthId = String(dateInfo.month).padStart(2, "0") as CashFlowMonthId;
 
-      const rawProj = String(row?.[7] ?? row?.[8] ?? "").trim();
-      const proj = rawProj.toUpperCase() || "(SEM PROJETO)";
-      const channel = mapping[proj] || suggestChannel(proj);
+      const rawProj = colProj >= 0 ? String(row?.[colProj] ?? "").trim() : "";
+      const rawProjUpper = rawProj.toUpperCase();
+      const hasProj = rawProjUpper !== "" && rawProjUpper !== "N/D";
+      const proj = hasProj ? rawProjUpper : "(SEM PROJETO)";
+      const channel = mapping[proj] || (hasProj ? suggestChannel(proj) : defaultChannelForFile);
       const entity = channelToEntity(channel);
-      if (proj === "(SEM PROJETO)") noProjTotal += Math.abs(amount);
+      if (!hasProj) noProjTotal += Math.abs(amount);
 
       const codeMatch = categoria.match(/^([0-9.]+)/);
       const fullCode = codeMatch ? codeMatch[1].replace(/\.$/, "") : "";
       const group = fullCode.split(".").slice(0, 2).join(".");
 
       let leaf: string | undefined =
-        entity === "bsg" ? BSG_CODE_OVERRIDES[fullCode] || BSG_CODE_TO_LEAF[group] : NEWCO_CODE_TO_LEAF[group];
+        entity === "bsg"
+          ? BSG_CODE_OVERRIDES[fullCode] || BSG_CODE_TO_LEAF[group]
+          : NEWCO_CODE_OVERRIDES[fullCode] || NEWCO_CODE_TO_LEAF[group];
 
       if (!leaf) {
         leaf = "Otros";
@@ -558,16 +594,18 @@ export function FluxoCaixaManager() {
 
       // Só linha de Ingreso fica positiva; Egreso/Investimento (e qualquer linha que eu não
       // reconheça) entra negativo — Contas a Pagar/Pagas são sempre pagamentos (saída de caixa).
+      // Arquivo de Recebimentos é o oposto: é sempre entrada, então mesmo caindo em "Otros" (sem
+      // mapa pro código) continua positivo — o tipo do arquivo manda mais que o rowType da linha.
       const rowType = rowTypeByKey[`${entity}::${leaf}`];
       const magnitude = Math.abs(amount);
-      const signedAmount = rowType === "income" ? magnitude : -magnitude;
+      const signedAmount = format === "receipts" || rowType === "income" ? magnitude : -magnitude;
 
       grandTotal += magnitude;
       agg[entity][leaf] = agg[entity][leaf] || {};
       if (!agg[entity][leaf][monthId]) agg[entity][leaf][monthId] = { total: 0, byChannel: {} };
       const cell = agg[entity][leaf][monthId]!;
-      cell.total += signedAmount;
-      cell.byChannel[channel] = (cell.byChannel[channel] || 0) + signedAmount;
+      cell.total = round2(cell.total + signedAmount);
+      cell.byChannel[channel] = round2((cell.byChannel[channel] || 0) + signedAmount);
     }
 
     const byChannelField = field === "planned" ? "plannedByChannel" : "realizedByChannel";
@@ -656,35 +694,33 @@ export function FluxoCaixaManager() {
       try {
         const bstr = evt.target?.result;
         const wb = XLSX.read(bstr, { type: "binary" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const data: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
-        if (!data || data.length < 3) {
-          toast.warning("Arquivo sem registros suficientes", "Esse arquivo Excel não tem linhas de dados para importar.");
-          return;
-        }
+        const layout = resolveImportLayout(wb);
 
-        const headerRow = (data[1] || []).map((h: any) => String(h ?? "").trim());
-        const hasAPagar = headerRow.includes("A Pagar ou Receber");
-        const hasPago = headerRow.includes("Pago ou Recebido");
-        const isLedgerFormat = headerRow.includes("Categoria") && (hasAPagar || hasPago);
-
-        if (isLedgerFormat) {
-          const field: "planned" | "realized" = hasAPagar ? "planned" : "realized";
+        if (layout) {
+          const { data, colCategoria, colValor, colProj, dataStartIdx, format } = layout;
+          // Payables (Contas a Pagar/Pagas): campo decidido pelo cabeçalho da coluna de valor
+          // ("A Pagar ou Receber" -> Ppto, "Pago ou Recebido" -> Real). Receipts (Recebimentos):
+          // é sempre dinheiro que já entrou -> Real.
+          const valorHeaderText = String(data[dataStartIdx - 1]?.[colValor] ?? "").toLowerCase();
+          const field: "planned" | "realized" = format === "payables" && valorHeaderText.includes("a pagar") ? "planned" : "realized";
           const fieldLabel = field === "planned" ? "Orçado (Ppto)" : "Realizado";
+          const defaultChannelForFile: ImportChannel = format === "receipts" ? "produto" : "tiendas";
 
           // 1ª passada: só agrupa por Projeto (mesma coluna e mesma lógica da DRE) pra montar a
           // tela de revisão — o rollup por código de conta acontece depois, já com a entidade
           // (NewCo/BSG) confirmada.
           const projGroups: Record<string, { rawLabel: string; count: number; amount: number }> = {};
-          for (let i = 2; i < data.length; i++) {
+          for (let i = dataStartIdx; i < data.length; i++) {
             const row = data[i];
-            const categoria = String(row?.[6] ?? "").trim();
-            const amount = Number(row?.[4]);
+            const categoria = String(row?.[colCategoria] ?? "").trim();
+            const amount = Number(row?.[colValor]);
             if (!categoria || !amount) continue; // pula linha de total/rodapé da planilha (sem Categoria)
-            const rawProj = String(row?.[7] ?? row?.[8] ?? "").trim();
-            const proj = rawProj.toUpperCase() || "(SEM PROJETO)";
+            const rawProj = colProj >= 0 ? String(row?.[colProj] ?? "").trim() : "";
+            const rawProjUpper = rawProj.toUpperCase();
+            const hasProj = rawProjUpper !== "" && rawProjUpper !== "N/D";
+            const proj = hasProj ? rawProjUpper : "(SEM PROJETO)";
             if (!projGroups[proj]) {
-              projGroups[proj] = { rawLabel: rawProj || "(sem projeto)", count: 0, amount: 0 };
+              projGroups[proj] = { rawLabel: hasProj ? rawProj : "(sem projeto)", count: 0, amount: 0 };
             }
             projGroups[proj].count += 1;
             projGroups[proj].amount += Math.abs(amount);
@@ -700,7 +736,7 @@ export function FluxoCaixaManager() {
               rawLabel: projGroups[proj].rawLabel,
               count: projGroups[proj].count,
               amount: projGroups[proj].amount,
-              channel: persistedMap[proj] || suggestChannel(proj),
+              channel: persistedMap[proj] || (proj === "(SEM PROJETO)" ? defaultChannelForFile : suggestChannel(proj)),
               isNew: !persistedMap[proj],
             }))
             .sort((a, b) => b.amount - a.amount);
@@ -708,21 +744,28 @@ export function FluxoCaixaManager() {
           const hasNew = summary.some((s) => s.isNew);
           if (!hasNew) {
             const mapping = Object.fromEntries(summary.map((s) => [s.proj, s.channel])) as Record<string, ImportChannel>;
-            finalizeFluxoImport(data, field, fieldLabel, mapping, file.name, summary);
+            finalizeFluxoImport(layout, field, fieldLabel, mapping, file.name, summary);
           } else {
-            setPendingImport({ fileName: file.name, data, field, fieldLabel, summary });
+            setPendingImport({ fileName: file.name, layout, field, fieldLabel, summary });
           }
           return;
         }
 
-        // Layout original da planilha CashFlow - 2026.xlsx (4 colunas por mês, casado por nome de linha).
-        // Como NewCo e BSG têm linhas com o mesmo nome (ex.: "Impuestos", "Otros"), essa reimportação
-        // exige uma entidade específica selecionada, para não aplicar a mesma linha às duas.
+        // Não achei coluna "Categoria" em nenhuma aba: tenta o layout original da planilha
+        // CashFlow - 2026.xlsx (4 colunas por mês, casado por nome de linha). Como NewCo e BSG têm
+        // linhas com o mesmo nome (ex.: "Impuestos", "Otros"), essa reimportação exige uma
+        // entidade específica selecionada, para não aplicar a mesma linha às duas.
         if (entityView === "both") {
           toast.warning(
             "Selecione uma entidade antes de importar",
             'Para reimportar a planilha "CashFlow - 2026.xlsx" original, selecione NewCo ou BSG (não "Ambos").'
           );
+          return;
+        }
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const data: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+        if (!data || data.length < 3) {
+          toast.warning("Arquivo sem registros suficientes", "Esse arquivo Excel não tem linhas de dados para importar.");
           return;
         }
         const targetEntity = entityView;
@@ -942,7 +985,7 @@ export function FluxoCaixaManager() {
                                     <input
                                       type="number"
                                       step="any"
-                                      value={planned !== 0 ? planned : ""}
+                                      value={planned !== 0 ? round2(planned) : ""}
                                       placeholder="0,00"
                                       onChange={(e) => handleValueChange((leafItem as CashFlowLineItem).id, m.id, "planned", e.target.value)}
                                       className={`w-full text-right font-mono text-[11px] px-1 py-0.5 bg-transparent border border-transparent rounded-none hover:bg-zinc-50 dark:hover:bg-zinc-900 hover:border-zinc-300 dark:hover:border-zinc-700 focus:bg-zinc-50 dark:focus:bg-zinc-900 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-hidden focus:ring-1 focus:ring-zinc-600 transition-colors ${NUMBER_INPUT_CLASS}`}
@@ -958,7 +1001,7 @@ export function FluxoCaixaManager() {
                                     <input
                                       type="number"
                                       step="any"
-                                      value={realized !== 0 ? realized : ""}
+                                      value={realized !== 0 ? round2(realized) : ""}
                                       placeholder="0,00"
                                       onChange={(e) => handleValueChange((leafItem as CashFlowLineItem).id, m.id, "realized", e.target.value)}
                                       className={`w-full text-right font-mono text-[11px] px-1 py-0.5 bg-transparent border border-transparent rounded-none hover:bg-zinc-50 dark:hover:bg-zinc-900 hover:border-zinc-300 dark:hover:border-zinc-700 focus:bg-zinc-50 dark:focus:bg-zinc-900 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-hidden focus:ring-1 focus:ring-zinc-600 transition-colors ${NUMBER_INPUT_CLASS}`}
@@ -1048,6 +1091,26 @@ export function FluxoCaixaManager() {
                 <UploadCloud className="h-3.5 w-3.5" />
                 <span>IMPORTAR (CONTAS A PAGAR/PAGAS)</span>
               </button>
+
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  onClick={handleExpandAllSections}
+                  className="flex items-center justify-center gap-1.5 py-2 px-2 border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-[11px] font-semibold text-zinc-800 dark:text-zinc-200 transition-colors"
+                  title="Expandir todas as seções"
+                >
+                  <ChevronsDown className="h-3.5 w-3.5" />
+                  <span>EXPANDIR</span>
+                </button>
+
+                <button
+                  onClick={handleCollapseAllSections}
+                  className="flex items-center justify-center gap-1.5 py-2 px-2 border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-[11px] font-semibold text-zinc-800 dark:text-zinc-200 transition-colors"
+                  title="Recolher todas as seções"
+                >
+                  <ChevronsUp className="h-3.5 w-3.5" />
+                  <span>FECHAR</span>
+                </button>
+              </div>
 
               <button
                 onClick={handleReset}
@@ -1153,7 +1216,7 @@ export function FluxoCaixaManager() {
           summary={pendingImport.summary}
           onCancel={() => setPendingImport(null)}
           onConfirm={(mapping) =>
-            finalizeFluxoImport(pendingImport.data, pendingImport.field, pendingImport.fieldLabel, mapping, pendingImport.fileName, pendingImport.summary)
+            finalizeFluxoImport(pendingImport.layout, pendingImport.field, pendingImport.fieldLabel, mapping, pendingImport.fileName, pendingImport.summary)
           }
         />
       )}
